@@ -56,5 +56,16 @@ jobs:
           fi
           for id in ${IDS}; do
             echo "Suppression de la version ${id} (tag ${TAG})"
-            gh api -X DELETE "/orgs/${ORG}/packages/container/${PKG_ENC}/versions/${id}"
+            # GitHub refuse de supprimer une version de package publique ayant dépassé 5000
+            # téléchargements (HTTP 400) — restriction de la plateforme, pas une erreur de ce
+            # workflow. Non bloquant : l'image reste juste orpheline dans GHCR. Toute AUTRE
+            # erreur reste fatale (pas de masquage générique par "|| true").
+            if ! OUT=$(gh api -X DELETE "/orgs/${ORG}/packages/container/${PKG_ENC}/versions/${id}" 2>&1); then
+              if echo "${OUT}" | grep -qi "more than 5000 downloads"; then
+                echo "::warning::Version ${id} (tag ${TAG}) non supprimée — plus de 5000 téléchargements, restriction GitHub. Non bloquant."
+              else
+                echo "${OUT}" >&2
+                exit 1
+              fi
+            fi
           done
