@@ -1,0 +1,214 @@
+name: PR Checks
+
+# Jobs réservés aux PR : mutation testing (PITest) + previews (image Docker + publication
+# Maven), exercés en parité avec la Release. Sortis de ci.yml afin de NE PAS apparaître en
+# "skipped" sur les runs push (main/develop).
+on:
+  pull_request:
+    # Même filtre que ci.yml : une PR purement docs/markdown/templates ne déclenche pas ces
+    # jobs (build/push GHCR, deploy Maven temporaire, mutation) — parité de comportement.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -----------------------------------------
+  # MUTATION TESTING (PITest) — indicateur qualité non bloquant (continue-on-error).
+  # Job autonome (pas de needs cross-workflow) : PITest recompile lui-même. Rapport uploadé.
+  # -----------------------------------------
+  mutation:
+    name: Mutation Testing (PITest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Java + Maven
+        uses: ./.github/actions/setup-java
+
+      # Step-level continue-on-error so the job (and PR check) stays green:
+      # mutation score is a quality indicator, not a hard merge gate (CLAUDE.md).
+      - name: PITest — mutation coverage
+        continue-on-error: true
+        run: mvn --no-transfer-progress test-compile pitest:mutationCoverage -Pmutation -Dmaven.compiler.release=24
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutation-report
+          path: target/pit-reports/
+
+  # -----------------------------------------
+  # DOCKER PREVIEW — build + push GHCR comme la Release (zéro surprise au merge).
+  # Image `pivot-collaboratif-core-preview:pr-<num>` (package SÉPARÉ ≠ prod), supprimée à la fermeture de
+  # la PR par pr-image-cleanup.yml. amd64 uniquement. Same-repo seulement (les forks n'ont
+  # pas de token d'écriture GHCR).
+  # -----------------------------------------
+  docker-preview:
+    name: Docker preview image (PR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      packages: write
+      security-events: write   # upload du SARIF Trivy (parité avec la Release)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Mirror EXACT de la Release : build & load (pas de push) -> Trivy (gate) -> push.
+      # Une image qui casserait le gate Trivy de la Release casse la PR -> zéro surprise.
+      - name: Build & load preview image (amd64)
+        run: |
+          # GHCR exige un nom de dépôt en minuscules ; github.repository contient PIVOT-PLATFORM.
+          # Package dédié aux previews (jamais l'image de prod pivot-collaboratif-core).
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/pivot-collaboratif-core-preview:pr-${{ github.event.pull_request.number }}"
+          echo "PREVIEW_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          docker buildx build --platform linux/amd64 --load -t "${IMAGE}" .
+
+      - name: Scan preview image - Trivy (gate avant push)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.PREVIEW_IMAGE }}
+          format: sarif
+          output: trivy-preview.sarif
+          severity: CRITICAL,HIGH
+          # Ne bloque que sur les CVE CORRIGEABLES : les CVE OS de l'image de base sans
+          # correctif disponible (ex. eclipse-temurin/Ubuntu) ne doivent pas bloquer chaque PR.
+          # Dès qu'un fix existe et qu'on rebuild, elles redeviennent bloquantes.
+          ignore-unfixed: true
+          exit-code: '1'
+
+      # MÊME catégorie code-scanning que le scan image de la Release (release.yml). La Release
+      # ne tourne que sur push main : sans ça, la config `trivy-container` n'existerait jamais
+      # sur les PR → code scanning afficherait "1 configuration not found" (impossible de diff).
+      # Le preview (PR) fournit donc la même analyse "image container" que la Release (main).
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        if: always() && hashFiles('trivy-preview.sarif') != ''
+        with:
+          sarif_file: trivy-preview.sarif
+          category: trivy-container
+
+      # Atteint uniquement si Trivy a réussi.
+      - name: Push preview image (scan OK)
+        run: docker push "${PREVIEW_IMAGE}"
+
+      - name: Résumé
+        run: |
+          echo "Image preview : ${PREVIEW_IMAGE}" >> "$GITHUB_STEP_SUMMARY"
+
+  # -----------------------------------------
+  # MAVEN DEPLOY PREVIEW — exerce le chemin de publication Maven de la Release (build +
+  # deploy:deploy-file vers GitHub Packages), en version PR-scoped supprimée juste après.
+  # NB : si aucune release n'existe encore, la version PR est l'UNIQUE version du package
+  # partagé fr.pivot.pivot-collaboratif-core → GitHub refuse de supprimer la dernière version (on ne touche
+  # jamais le package partagé) ; l'orphelin disparaît dès la 1re vraie release.
+  # Same-repo seulement (les forks n'ont pas de token packages:write).
+  # -----------------------------------------
+  maven-deploy-preview:
+    name: Maven deploy preview (PR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # Version PR-scoped : ne peut JAMAIS entrer en collision avec une release semver (X.Y.Z).
+      PR_VERSION: 0.0.0-pr${{ github.event.pull_request.number }}-SNAPSHOT
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Java 25 (+ GitHub Packages)
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Set PR-scoped Maven version
+        run: mvn --no-transfer-progress -B versions:set -DnewVersion="$PR_VERSION" -DgenerateBackupPoms=false
+
+      # Valide EXACTEMENT le chemin de la Release : build du JAR + deploy:deploy-file (et pas
+      # `mvn deploy`), pour exercer sur PR la même commande de publication GitHub Packages.
+      - name: Build + deploy preview (deploy:deploy-file)
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mvn --no-transfer-progress -B package -DskipTests -Dmaven.compiler.release=24
+          JAR=$(find target -maxdepth 1 -name 'pivot-collaboratif-core-*.jar' ! -name '*-sources.jar' | head -1)
+          mvn --no-transfer-progress -B deploy:deploy-file \
+            -DrepositoryId=github \
+            -Durl="https://maven.pkg.github.com/${GITHUB_REPOSITORY}" \
+            -Dfile="${JAR}" -DpomFile=pom.xml -Dpackaging=jar
+
+      # Supprime la version PR juste après (always : nettoie même si une étape a échoué).
+      # Suppression STRICTE par nom == PR_VERSION → ne touche jamais une version de release.
+      - name: Cleanup preview Maven version
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          PKG: fr.pivot.pivot-collaboratif-core   # package Maven = groupId.artifactId
+        run: |
+          set -euo pipefail
+          echo "Suppression de la version Maven ${PR_VERSION} dans ${PKG}…"
+          if ! VERSIONS=$(gh api --paginate "/orgs/${ORG}/packages/maven/${PKG}/versions" 2> err.log); then
+            if grep -qi "Not Found" err.log; then
+              echo "Package ${PKG} absent — rien à nettoyer."
+              exit 0
+            fi
+            echo "Erreur non gérée :" >&2; cat err.log >&2; exit 1
+          fi
+          ID=$(printf '%s' "$VERSIONS" | jq -r ".[] | select(.name == \"${PR_VERSION}\") | .id")
+          if [ -z "${ID}" ]; then
+            echo "Version ${PR_VERSION} introuvable (deploy non abouti ?). Rien à supprimer."
+            exit 0
+          fi
+          # Suppression de la SEULE version PR (jamais le package : il est partagé avec les
+          # releases de prod). Si c'est l'unique version du package (aucune release encore),
+          # GitHub refuse la suppression → on laisse l'orphelin (inoffensif, clairement
+          # nommé) avec un warning plutôt que de risquer le package partagé.
+          if ! gh api -X DELETE "/orgs/${ORG}/packages/maven/${PKG}/versions/${ID}" 2> derr.log; then
+            if grep -qiE "last version|cannot delete the last" derr.log; then
+              echo "::warning::${PR_VERSION} est l'unique version de ${PKG} → non supprimée (on ne touche jamais le package partagé). À purger manuellement si gênant."
+              exit 0
+            fi
+            cat derr.log >&2; exit 1
+          fi
+          echo "Version ${PR_VERSION} supprimée."

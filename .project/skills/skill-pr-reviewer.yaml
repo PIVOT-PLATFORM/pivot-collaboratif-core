@@ -1,0 +1,96 @@
+skill:
+  id: pivot-pr-reviewer
+  version: "1.0"
+  name: "PR Review — Gate 3 & Gate 4 (pivot-core)"
+  description: >
+    Checklist de relecture croisée neutre pour les PRs pivot-core.
+    Couvre : cohérence architecture Java/Spring, traçabilité AC, sécurité,
+    dette technique, standards PIVOT. Chargé par PR_Review_Agent et Expert_PR_Review.
+  loaded_by:
+    - PR_Review_Agent
+    - Expert_PR_Review
+
+---
+
+review_dimensions:
+
+  architecture:
+    rules:
+      - "Aucune logique métier dans les contrôleurs — délégation au Service"
+      - "DTOs pour toutes les entrées/sorties — jamais entité JPA directement"
+      - "@Transactional uniquement sur les Services"
+      - "JavaDoc présente sur toutes les classes et méthodes publiques nouvelles"
+      - "Exceptions métier typées — pas de RuntimeException brute"
+      - "Pas de @SuppressFBWarnings sans validation explicite du mainteneur"
+
+  ac_coverage:
+    rules:
+      - "Chaque AC de l'US tracé dans la table traçabilité AC → test"
+      - "Aucun AC orphelin (présent dans l'US, absent des tests)"
+      - "Tests unitaires ET tests d'intégration si l'AC touche la BDD"
+      - "Coverage Gate 2 ≥ 85 % vérifié avant Gate 4"
+      - "Nommage des tests : inclure l'identifiant AC"
+
+  security:
+    rules:
+      - "tenantId extrait exclusivement du TenantContext — jamais du body/header custom"
+      - "userId jamais accepté dans le body d'un endpoint /api/account/*"
+      - "Test TI cross-tenant obligatoire sur chaque endpoint admin"
+      - "Aucun secret dans le code — variables d'environnement uniquement"
+      - "// NOSONAR : zéro — exclusions via SonarCloud UI uniquement"
+      - "// nosemgrep : interdit sans validation explicite du mainteneur"
+
+  technical_debt:
+    rules:
+      - "Pas de TODO non tracé dans le backlog"
+      - "Checkstyle + SpotBugs verts"
+      - "Pas de code mort (imports inutilisés, méthodes non appelées)"
+      - "Pas de magic string — constantes nommées"
+
+---
+
+gate_scoring:
+
+  gate_3_hard_blocks:
+    - "Secret Gitleaks détecté → STOP immédiat"
+    - "Label security ou breaking-change → needs-human-review obligatoire"
+    - "Modification contrat module/OIDC sans coordination pivot-ui → STOP"
+    - "Modification Spring Security sans Expert_OIDC_IAM → STOP"
+
+  gate_4_breakdown:
+    architecture_25pts: "Controller/Service/Repository/DTO respectés, JavaDoc présente"
+    ac_traceability_25pts: "Tous les ACs tracés, tests nommés avec identifiant AC"
+    security_25pts: "Isolation tenant, pas de secret, endpoints admin protégés, test cross-tenant"
+    quality_25pts: "Checkstyle/SpotBugs verts, pas de TODO"
+    thresholds:
+      merge_autonome: "= 100/100 — sortie du mode draft, merge sans intervention humaine"
+      merge_documente: "60–99 — merge avec commentaire breakdown obligatoire"
+      breaking_point_2: "< 60 — label needs-human-review + escalade mainteneur"
+
+---
+
+artifact_format: |
+  gate: MERGE_CONFIDENCE
+  us_id: {id}
+  score: {0-100}
+  decision: MERGE_AUTONOMOUS | MERGE_DOCUMENTED | BREAKING_POINT_2
+  breakdown:
+    architecture: {0-25}
+    ac_traceability: {0-25}
+    security: {0-25}
+    quality: {0-25}
+  notes: "..."
+
+---
+
+gate_checklist:
+  gate_4:
+    - "Architecture : Controller/Service/Repository/DTO respectés"
+    - "JavaDoc présente sur toutes les classes et méthodes publiques nouvelles"
+    - "Table traçabilité AC → test complète dans le PR template"
+    - "Aucun AC orphelin (dans l'US mais absent des tests)"
+    - "tenantId/userId jamais dans body ou header custom"
+    - "Test TI cross-tenant présent sur chaque endpoint admin"
+    - "Gitleaks clean"
+    - "Checkstyle + SpotBugs verts"
+    - "Score Gate 4 posté en commentaire PR (jamais de fichier committé)"

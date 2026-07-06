@@ -1,0 +1,106 @@
+version: "2.0"
+
+github:
+  controls:
+
+    # --- Supply chain : SHA pinning ---
+    actionsMustBePinnedByCommitSha:
+      enabled: true
+      # slsa-framework exempté du SHA-pin : builder-fetch.sh exige refs/tags/vX.Y.Z,
+      # un SHA brut fait échouer le téléchargement du binaire (exit 27). Réf TAG obligatoire.
+      trustedOwners:
+        - slsa-framework
+
+    actionsMustNotBeArchived:
+      enabled: true
+
+    actionsMustNotCarryKnownCVEs:
+      enabled: true
+
+    githubActionMustComeFromAuthorizedSources:
+      enabled: true
+      trustGithubOfficialActions: true
+      trustSameOrgActions: true
+      trustedGithubActions:
+        - aquasecurity/trivy-action
+        - ossf/scorecard-action
+        - gitleaks/gitleaks-action
+        - getplumber/plumber
+        - browser-actions/setup-chrome
+        - docker/setup-buildx-action
+        - docker/login-action
+        - slsa-framework/slsa-github-generator
+
+    # --- Images : pas de tags mutables ---
+    containerImageMustNotUseForbiddenTags:
+      enabled: true
+      tags:
+        - latest
+        - dev
+        - development
+        - staging
+        - main
+        - master
+        - HEAD
+      containerImagesMustBePinnedByDigest: false
+
+    # --- Debug trace interdit ---
+    pipelineMustNotEnableDebugTrace:
+      enabled: true
+      forbiddenVariables:
+        - ACTIONS_STEP_DEBUG
+        - ACTIONS_RUNNER_DEBUG
+
+    # --- Docker-in-Docker sur shared runners ---
+    pipelineMustNotUseDockerInDocker:
+      enabled: true
+      detectInsecureDaemon: true
+
+    # --- Scripts non verifies ---
+    pipelineMustNotExecuteUnverifiedScripts:
+      enabled: true
+      trustedUrls: []
+
+    # --- Injection user input dans scripts ---
+    workflowMustNotInjectUserInputInScripts:
+      enabled: true
+
+    # --- Triggers dangereux (pull_request_target etc.) ---
+    workflowMustNotUseDangerousTriggers:
+      enabled: true
+
+    # --- Permissions explicites obligatoires ---
+    workflowsMustDeclarePermissions:
+      enabled: true
+
+    # --- Pas de write-all ---
+    workflowMustNotGrantPermissionsWriteAll:
+      enabled: true
+
+    # --- Secrets: inherit interdit dans reusable workflows ---
+    reusableWorkflowsMustNotInheritSecrets:
+      enabled: true
+
+    # --- Jobs securite non affaiblissables ---
+    securityJobsMustNotBeWeakened:
+      enabled: true
+      securityJobPatterns:
+        - "*codeql*"
+        - "*gitleaks*"
+        - "*semgrep*"
+        - "*plumber*"
+        - "*sast*"
+        - "*sca*"
+        - "*trivy*"
+        - "*scorecard*"
+        - "*security*"
+        - "*scan*"
+
+    # --- Protection de branche ---
+    branchMustBeProtected:
+      enabled: true
+      defaultMustBeProtected: true
+      namePatterns:
+        - main
+      allowForcePush: false
+      codeOwnerApprovalRequired: true

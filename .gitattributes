@@ -1,0 +1,17 @@
+# Normalisation des fins de ligne — LF par défaut, auto-détection texte
+* text=auto eol=lf
+
+# Scripts Windows — CRLF obligatoire
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+
+# Maven wrapper — LF
+mvnw    text eol=lf
+
+# Binaires — pas de normalisation
+*.jar   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary

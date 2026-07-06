@@ -1,0 +1,19 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
+    ["@semantic-release/exec", {
+      "verifyReleaseCmd": "echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\""
+    }],
+    ["@semantic-release/github", {
+      "successComment": false,
+      "failComment": false
+    }],
+    ["@semantic-release/git", {
+      "assets": ["CHANGELOG.md", "pom.xml"],
+      "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+    }]
+  ]
+}

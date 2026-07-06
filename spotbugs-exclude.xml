@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter xmlns="https://github.com/spotbugs/filter/3.0.0"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                xsi:schemaLocation="https://github.com/spotbugs/filter/3.0.0
+                    https://raw.githubusercontent.com/spotbugs/spotbugs/3.1.0/spotbugs/etc/findbugsfilter.xsd">
+
+    <!--
+        EI_EXPOSE_REP / EI_EXPOSE_REP2:
+          - JPA entities require mutable getters/setters for the persistence provider
+            (Hibernate); defensive copies would break dirty-checking.
+          - Spring components (services, controllers, filters, config) store
+            constructor-injected singleton beans (e.g. CookieHelper). These are container-
+            managed, not externally-mutable state — copying them is meaningless.
+        Intentional design decisions, not bugs.
+    -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+        <Or>
+            <Package name="fr.pivot.auth.entity"/>
+            <Package name="fr.pivot.tenant.entity"/>
+            <Package name="fr.pivot.auth.service"/>
+            <Package name="fr.pivot.auth.controller"/>
+            <Package name="fr.pivot.auth.config"/>
+            <Package name="fr.pivot.config"/>
+            <Package name="fr.pivot.auth.filter"/>
+            <Package name="fr.pivot.auth.scheduler"/>
+            <Package name="fr.pivot.scheduler"/>
+            <!-- Module system : ModuleActivationService stocke des beans singleton injectés
+                 (repository, registry, publisher) ; ModuleActivation est une entité JPA. -->
+            <Package name="fr.pivot.core.modules"/>
+            <!-- Cache Redis (EN03.3) : ModuleActivationCacheService stocke des beans
+                 singleton injectés (StringRedisTemplate, MeterRegistry, ModuleActivationService). -->
+            <Package name="fr.pivot.core.modules.cache"/>
+            <!-- Contrôleurs REST du registre de modules (ModuleController, AdminModuleController) :
+                 stockent des beans singleton constructeur-injectés (ModuleRegistryService,
+                 AdminModuleActivationService, ModuleActivationService, ModuleRegistry, AuditService,
+                 CookieHelper). -->
+            <Package name="fr.pivot.modules.api"/>
+            <!-- US02.1.1 — AccountController/ProfileService/AvatarStorageService stockent des
+                 beans singleton constructeur-injectés (ProfileService, AuditService,
+                 CookieHelper, UserRepository, AvatarStorageService, AvatarStorageProperties —
+                 record de configuration immuable). -->
+            <!-- Export de données personnelles (RGPD Art. 20, US02.3.1) : DataExportRequest est
+                 une entité JPA (getters/setters mutables requis par Hibernate) ; le service et le
+                 contrôleur stockent des beans singleton constructeur-injectés (repositories,
+                 AuditService, EmailService, ExportArchiveBuilder, ExportStorageService,
+                 CookieHelper) ; ExportBundle est un porteur de données interne (record) qui
+                 expose des listes déjà considérées immuables côté appelant. -->
+            <Package name="fr.pivot.account.controller"/>
+            <Package name="fr.pivot.account.service"/>
+            <Package name="fr.pivot.account.config"/>
+            <Package name="fr.pivot.account.entity"/>
+            <Package name="fr.pivot.account.scheduler"/>
+            <!-- Gestion plateforme des tenants (SuperAdminTenantController, US06.2.1/US06.2.2/US06.2.3) :
+                 stocke des beans singleton constructeur-injectés (SuperAdminTenantService,
+                 CookieHelper, TenantRepository, UserRepository, RateLimiterService,
+                 AuditService). -->
+            <Package name="fr.pivot.tenant.api"/>
+        </Or>
+    </Match>
+
+</FindBugsFilter>

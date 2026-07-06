@@ -1,0 +1,195 @@
+name: Security
+
+on:
+  # No paths-ignore here: workflows that upload code-scanning SARIF (CodeQL, Semgrep,
+  # Plumber) must run on every push/PR. Skipping on doc-only changes leaves a configuration
+  # without results, which makes code scanning report "configuration not found" and prevents
+  # it from diffing alerts introduced by a pull request.
+  push:
+    branches: [main, develop]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'   # Lundi 6h UTC
+
+permissions: read-all
+
+jobs:
+  # -----------------------------------------
+  # SECRETS — Gitleaks
+  # -----------------------------------------
+  gitleaks:
+    name: Gitleaks - Secret Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENCE_KEY }}
+          GITLEAKS_CONFIG: .github/workflows/configuration/.gitleaks.toml
+
+  # -----------------------------------------
+  # SAST — CodeQL (Java)
+  # -----------------------------------------
+  codeql:
+    name: CodeQL - SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Java + Maven
+        uses: ./.github/actions/setup-java
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        with:
+          languages: java
+          config-file: .github/codeql/config.yml
+
+      - name: Build
+        run: mvn --no-transfer-progress compile -DskipTests
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+
+  # -----------------------------------------
+  # SAST — Semgrep (OWASP + Java + Spring)
+  # -----------------------------------------
+  semgrep:
+    name: Semgrep - SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write   # requis par upload-sarif (sinon "Resource not accessible by integration")
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python (Semgrep CLI)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Semgrep Scan
+        run: |
+          semgrep scan \
+            --config p/java \
+            --config p/spring \
+            --config p/owasp-top-ten \
+            --config p/security-audit \
+            --config p/jwt \
+            --config p/sql-injection \
+            --config p/command-injection \
+            --config p/secrets \
+            --exclude-rule java.spring.security.audit.spring-csrf-disabled \
+            --sarif --output semgrep-results.sarif \
+            src/main/java \
+            src/test/java || true
+          FINDINGS=$(jq '.runs[0].results | length' semgrep-results.sarif)
+          echo "Semgrep findings (non-suppressed): $FINDINGS"
+          if [ "$FINDINGS" -gt 0 ]; then
+            jq -r '.runs[0].results[] | "[\(.ruleId)] \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine // "?") -- \(.message.text[0:300])"' semgrep-results.sarif
+            exit 1
+          fi
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        if: always() && hashFiles('semgrep-results.sarif') != ''
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep-sast
+
+  # -----------------------------------------
+  # CI/CD CONFORMITE — Plumber
+  # -----------------------------------------
+  # Job id MUST stay "plumber": GitHub code scanning derives the analysis configuration
+  # from "<workflow>:<job_id>" (security.yml:plumber). Renaming it breaks the diff against
+  # the baseline on main and triggers "1 configuration not found".
+  plumber:
+    name: Plumber - CI/CD Compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run Plumber
+        uses: getplumber/plumber@a0658c7fbd82163d75803cce492d18e50ef71afd # v0.3.68
+        with:
+          sarif: plumber-results.sarif
+          output: plumber-results.json
+          pbom-cyclonedx: plumber-pbom.cdx.json
+          # Politique projet = 90% (l'action met 100% par défaut). Aligne sur le gate.
+          threshold: 90
+          # metadata-token : token avec lecture public-repo pour résoudre les versions
+          # des actions tierces (ex. aquasecurity/trivy-action) — l'org PIVOT-PLATFORM a
+          # une IP allow list qui bloque (403) la lecture des tags sinon. Optionnel :
+          # vide = check de version de ces actions "skipped" (compliance ~93%, > seuil 90).
+          metadata-token: ${{ secrets.PLUMBER_METADATA_TOKEN }}
+        env:
+          # PLUMBER_TOKEN = fine-grained PAT with Administration:read, so Plumber can
+          # read branch protection (branchMustBeProtected control). Falls back to the
+          # default GITHUB_TOKEN if the secret is absent (control then reports a false
+          # negative, but the workflow still runs).
+          GITHUB_TOKEN: ${{ secrets.PLUMBER_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Upload Plumber SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        if: always() && hashFiles('plumber-results.sarif') != ''
+        with:
+          sarif_file: plumber-results.sarif
+          category: plumber-supply-chain
+
+      - name: Upload Plumber artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && hashFiles('plumber-results.json') != ''
+        with:
+          name: plumber-report
+          path: |
+            plumber-results.json
+            plumber-pbom.cdx.json
+
+      - name: Plumber Gate (conformite >= 90% requise)
+        if: hashFiles('plumber-results.json') != ''
+        run: |
+          SCORE=$(jq '.compliance' plumber-results.json)
+          echo "Plumber compliance: ${SCORE}%"
+          if [ "$SCORE" -lt 90 ]; then
+            echo "::error::Plumber compliance ${SCORE}% < 90%% (security gate)"
+            exit 1
+          fi

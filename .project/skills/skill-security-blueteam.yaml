@@ -1,0 +1,98 @@
+skill:
+  id: pivot-security-blueteam
+  version: "1.0"
+  name: "Blue Team — Hardening Spring Boot"
+  description: >
+    Défenses et hardening PIVOT-CORE : Spring Security strict, headers HTTP,
+    rate limiting, isolation tenant, réponse aux rapports Red Team.
+    Chargé en réponse à un rapport Red Team ou lors de revue de SecurityConfig.
+  loaded_by:
+    - Expert_Blue_Team
+    - Security_Agent
+
+---
+
+defenses:
+
+  security_config:
+    rules:
+      - "CSRF désactivé uniquement sur les API REST stateless — commentaire obligatoire"
+      - "CORS : origines explicites, méthodes explicites, credentials=true si session cookie"
+      - "Actuator : exposer uniquement health, info, prometheus"
+      - "SessionCreationPolicy.STATELESS sur tous les endpoints API"
+      - "X-Frame-Options DENY via Spring Security headers"
+    pattern: |
+      http
+        .csrf(AbstractHttpConfigurer::disable)  // Stateless REST API
+        .sessionManagement(s -> s.sessionCreationPolicy(STATELESS))
+        .headers(h -> h
+            .frameOptions(fo -> fo.deny())
+            .contentTypeOptions(Customizer.withDefaults())
+        )
+        .cors(c -> c.configurationSource(corsConfigurationSource()))
+
+  error_handling:
+    rule: "GlobalExceptionHandler retourne un DTO générique — jamais de stack trace"
+    pattern: |
+      @RestControllerAdvice
+      public class GlobalExceptionHandler {
+          @ExceptionHandler(Exception.class)
+          public ResponseEntity<ErrorDto> handleGeneric(Exception e) {
+              LOG.error("unhandled_exception message=\"{}\"", e.getMessage(), e);
+              return ResponseEntity.internalServerError()
+                  .body(new ErrorDto("An unexpected error occurred"));
+          }
+      }
+
+  rate_limiting:
+    endpoints:
+      "/auth/login": "5 req/min par IP"
+      "/auth/refresh": "20 req/min par IP"
+      "/auth/forgot-password": "3 req/min par IP"
+      "/contact": "10 req/min par IP"
+    note: "Bucket4j recommandé — configuration via feature_flags table"
+
+  opaque_tokens:
+    rules:
+      - "Raw token jamais persisté — SHA-256 (256-bit SecureRandom) en BDD uniquement"
+      - "Raw token jamais loggué ni retourné après la première émission"
+      - "TTL géré en BDD (colonne expires_at) — pas de TTL navigateur"
+      - "Révocation immédiate en BDD sur logout (status = REVOKED)"
+      - "Rotation : ancienne session GRACE_REVOKED ou REVOKED avant d'émettre le nouveau token"
+
+  isolation_tenant:
+    rules:
+      - "TenantContext injecté via Spring Security Authentication — jamais depuis body/header"
+      - "Avant tout traitement admin : resource.tenantId == token.tenantId"
+      - "Appartenance invalide → 404 (pas 403 — ne pas confirmer l'existence cross-tenant)"
+      - "Test TI cross-tenant obligatoire sur CHAQUE endpoint admin"
+
+  anti_enumeration:
+    rule: "Réponse identique (200 OK) pour email existant / inexistant sur tous les flux"
+    applies_to:
+      - "/auth/forgot-password"
+      - "/auth/resend-verification"
+      - "/auth/register (si email déjà pris)"
+
+---
+
+response_to_redteam:
+  protocol:
+    step_1: "Reproduire localement avec un test TI avant de toucher le code"
+    step_2: "Corriger dans un commit security: — hard block Gate 4 automatique"
+    step_3: "Ajouter le vecteur dans skill-security-redteam.yaml (même PR)"
+    step_4: "Review humaine obligatoire avant merge (label needs-human-review)"
+    step_5: "Post-merge : vérifier que le test TI de régression est en CI"
+
+---
+
+gate_checklist:
+  gate_3:
+    - "CORS sans wildcard — origines explicites"
+    - "Actuator limité (health, info, prometheus)"
+    - "GlobalExceptionHandler présent — message générique en réponse"
+    - "Rate limiting sur /auth/login et /auth/refresh"
+    - "Opaque tokens : SHA-256 en BDD, jamais loggués"
+    - "Isolation tenant : 404 pour cross-tenant, test TI présent"
+    - "Anti-énumération : réponse uniforme sur flux email-based"
+    - "X-Frame-Options DENY configuré"

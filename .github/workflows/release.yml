@@ -1,0 +1,267 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  # -----------------------------------------
+  # 1. PREPARE — calcule la version SANS créer la release (dry-run).
+  #    Permissions minimales (contents: read). ISO pivot-ui.
+  # -----------------------------------------
+  prepare:
+    name: Compute release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.actor != 'dependabot[bot]'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          # Pas de cache: npm — pivot-collaboratif-core n'a pas de package-lock.json (projet Maven).
+
+      - name: Install Semantic Release
+        run: npm install --save-dev semantic-release @semantic-release/changelog @semantic-release/git @semantic-release/exec
+
+      - name: Compute next version (dry-run)
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
+        run: npx semantic-release --dry-run
+
+  # -----------------------------------------
+  # 2. RELEASE — build UNIQUE à la version finale, scan, push, publish Maven,
+  #    PUIS crée la release/tag en dernier.
+  #    Ne tourne que si `prepare` a déterminé une version.
+  #
+  #    SLSA L3 : id-token et attestations sont ABSENTS de ce job (le build ne peut
+  #    pas forger sa propre provenance). Ils sont accordés uniquement aux jobs
+  #    provenance-jar et provenance-container.
+  # -----------------------------------------
+  release:
+    name: Build, scan, publish & release
+    runs-on: ubuntu-latest
+    needs: [prepare]
+    if: needs.prepare.outputs.version != ''
+    timeout-minutes: 40
+    outputs:
+      image:         ${{ steps.build-docker.outputs.image_name }}
+      digest:        ${{ steps.push.outputs.digest }}
+      jar-subjects:  ${{ steps.checksums.outputs.subjects }}
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      packages: write
+      security-events: write
+      # id-token et attestations : accordés UNIQUEMENT aux jobs de provenance (SLSA L3).
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+
+      - name: Install Semantic Release
+        run: npm install --save-dev semantic-release @semantic-release/changelog @semantic-release/git @semantic-release/exec
+
+      - name: Setup Java 25 (+ GitHub Packages)
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      # Le pom.xml modifié ici est committé plus bas par "Semantic Release" (`pom.xml`
+      # dans les assets de @semantic-release/git, .releaserc.json) — même checkout, aucun
+      # git checkout/reset entre les deux ne l'efface. Sans ce commit, SonarCloud ne voit
+      # jamais de changement de sonar.projectVersion et le "new code" (mode "previous
+      # version") reste figé indéfiniment sur la première analyse.
+      - name: Set Maven version = release
+        run: mvn --no-transfer-progress -B versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+
+      - name: Build JAR (version finale)
+        run: mvn --no-transfer-progress -B package -DskipTests -Dmaven.compiler.release=24
+
+      - name: Compute build checksums
+        id: checksums
+        run: |
+          find target -maxdepth 1 -name '*.jar' ! -name '*-sources.jar' \
+            -exec sha256sum {} \; > build-checksums.txt
+          echo "Checksums :"; cat build-checksums.txt
+          echo "subjects=$(base64 -w0 < build-checksums.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & load Docker image (amd64)
+        id: build-docker
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/pivot-collaboratif-core"
+          echo "IMAGE_REF=${IMAGE}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "IMAGE_LATEST=${IMAGE}:latest" >> "$GITHUB_ENV"
+          echo "image_name=${IMAGE}" >> "$GITHUB_OUTPUT"
+          docker buildx build --platform linux/amd64 --load \
+            -t "${IMAGE}:${GITHUB_SHA}" \
+            -t "${IMAGE}:latest" \
+            .
+
+      - name: Scan Docker image - Trivy (gate avant push)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          format: sarif
+          output: trivy-core.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        if: always() && hashFiles('trivy-core.sarif') != ''
+        with:
+          sarif_file: trivy-core.sarif
+          category: trivy-container
+
+      - name: Push Docker image (scan OK)
+        id: push
+        run: |
+          docker push "${IMAGE_REF}"
+          PUSH_OUT=$(docker push "${IMAGE_LATEST}" 2>&1)
+          printf '%s\n' "${PUSH_OUT}"
+          DIGEST=$(printf '%s\n' "${PUSH_OUT}" | grep -oE 'sha256:[a-f0-9]{64}' | tail -1)
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::Digest introuvable après push — impossible d'attester l'image (SLSA L3)."
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to GitHub Packages (idempotent, vérifié)
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          JAR=$(find target -maxdepth 1 -name 'pivot-collaboratif-core-*.jar' ! -name '*-sources.jar' | head -1)
+          echo "Déploiement de ${JAR} (version ${VERSION})…"
+          OUT=$(mvn --no-transfer-progress -B deploy:deploy-file \
+            -DrepositoryId=github \
+            -Durl="https://maven.pkg.github.com/${GITHUB_REPOSITORY}" \
+            -Dfile="${JAR}" -DpomFile=pom.xml -Dpackaging=jar 2>&1)
+          code=$?
+          echo "$OUT"
+          if [ "$code" -eq 0 ]; then
+            echo "Déployé."
+            exit 0
+          fi
+          if ! echo "$OUT" | grep -qiE "already exist|409|Conflict"; then
+            echo "::error::Échec de déploiement (autre que 409)."; exit "$code"
+          fi
+          echo "Version ${VERSION} déjà publiée → vérification du digest avant de continuer…"
+          URL="https://maven.pkg.github.com/${GITHUB_REPOSITORY}/fr/pivot/pivot-collaboratif-core/${VERSION}/pivot-collaboratif-core-${VERSION}.jar"
+          if ! curl -fsSL -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" -o published.jar "$URL"; then
+            echo "::error::409 reçu mais impossible de télécharger le JAR publié (${URL})."; exit 1
+          fi
+          LOCAL_SHA=$(sha256sum "$JAR" | awk '{print $1}')
+          PUB_SHA=$(sha256sum published.jar | awk '{print $1}')
+          echo "local=${LOCAL_SHA}"
+          echo "publié=${PUB_SHA}"
+          if [ "$LOCAL_SHA" = "$PUB_SHA" ]; then
+            echo "::notice::JAR publié identique au JAR attesté → rerun idempotent, on continue."
+          else
+            echo "::error::Le JAR publié (${VERSION}) DIFFÈRE du JAR attesté. Provenance incohérente → échec."
+            exit 1
+          fi
+
+      - name: Semantic Release (create tag + release)
+        env:
+          GITHUB_TOKEN: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
+        run: npx semantic-release
+
+  # -----------------------------------------
+  # 3. PROVENANCE JAR — génère et signe la provenance SLSA L3 pour le JAR Maven.
+  #    id-token: write est ici, pas dans `release` → le build ne peut pas forger sa
+  #    propre provenance (différence clé L2 → L3).
+  #    Uploads l'attestation en asset de la GitHub Release créée par semantic-release.
+  #
+  # -----------------------------------------
+  provenance-jar:
+    name: SLSA provenance — JAR (L3)
+    needs: [release]
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    # Réf en TAG (@v2.1.0) et NON en SHA : avec compile-generator: false le binaire est
+    # téléchargé depuis la Release au ref détecté par detect-env (via OIDC job_workflow_ref).
+    # builder-fetch.sh exige refs/tags/vX.Y.Z ; un SHA brut → exit 2 → binaire absent →
+    # exit 127 → upload-artifact sans chemin → SUCCESS=false → échec final 27.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.release.outputs.jar-subjects }}
+      # upload-assets: false car le workflow est déclenché par push:branches:main
+      # (github.ref = refs/heads/main, pas un tag). Le générateur ne peut pas résoudre
+      # la GitHub Release depuis ce ref → l'upload échouerait silencieusement.
+      # La provenance est quand même générée et attachée au workflow run (artifact).
+      upload-assets: false
+
+  # -----------------------------------------
+  # 4. PROVENANCE CONTAINER — génère et signe la provenance SLSA L3 pour l'image Docker.
+  #    Attache l'attestation en tant qu'artefact OCI dans GHCR via cosign.
+  #
+  # -----------------------------------------
+  provenance-container:
+    name: SLSA provenance — Docker (L3)
+    needs: [release]
+    permissions:
+      id-token: write
+      packages: write
+      actions: read
+    # Réf en TAG (@v2.1.0) et NON en SHA : voir provenance-jar — builder-fetch.sh exige
+    # refs/tags/vX.Y.Z, un SHA brut fait échouer le téléchargement du binaire (exit 27).
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ${{ needs.release.outputs.image }}
+      digest: ${{ needs.release.outputs.digest }}
+    secrets:
+      # registry-username + registry-password : noms attendus par generator_container_slsa3.yml
+      # (slsa-framework/slsa-github-generator v2.1.0, utilise docker/login-action en interne).
+      # registry-username = github.actor (identique au login-action dans le job `release`).
+      registry-username: ${{ github.actor }}
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  # Le déploiement prod vit dans deploy.yml, déclenché `on: release: published` (après que
+  # Semantic Release a publié la GitHub Release). Event-based → il NE s'affiche jamais en
+  # "skipped" sur les pushs sans release, ET conserve `environment: production`.

@@ -1,0 +1,153 @@
+skill:
+  id: pivot-oidc-security
+  version: "1.1"
+  name: "OIDC / IAM & Spring Security — Opaque Tokens + OIDC Enterprise"
+  description: >
+    Sécurité PIVOT : deux mécanismes d'authentification distincts.
+    (1) Auth locale — opaque tokens SHA-256 stockés en BDD (pas de JWT).
+    (2) Auth enterprise — OIDC PKCE S256 avec validation JWKS via spring-security-oauth2-jose.
+    JWT_SECRET n'existe pas dans PIVOT. Chargé pour tout fichier auth/security.
+  loaded_by:
+    - Expert_OIDC_IAM
+    - Expert_Blue_Team
+    - Dev_Agent
+
+---
+
+auth_model:
+
+  local_auth:
+    mechanism: "Opaque tokens — SHA-256 stocké en BDD, jamais le token brut"
+    forbidden:
+      - "JWT (HS256, RS256…) pour la session locale — remplacé définitivement par opaque tokens"
+      - "JWT_SECRET — n'existe pas dans PIVOT"
+      - "Refresh token silencieux via iframe"
+    token_lifecycle:
+      - "256-bit SecureRandom → SHA-256 → stocké en BDD (table access_tokens)"
+      - "Raw token transmis une seule fois au client, jamais persisté côté serveur"
+      - "TTL défini en BDD — révocation immédiate possible"
+      - "Token expiré → 401 → Angular intercepteur → redirect /login"
+    storage_client:
+      - "Token en mémoire JavaScript uniquement (signal Angular readonly)"
+      - "Interdit : localStorage, sessionStorage, IndexedDB, Cookie"
+
+  oidc_enterprise:
+    mechanism: "OIDC PKCE S256 — JWT validé via JWKS (clé publique, pas de secret partagé)"
+    library: "spring-security-oauth2-jose"
+    rules:
+      - "Validation JWKS — issuer configure via application.yml, jamais hardcodé"
+      - "Claims vérifiés automatiquement : iss, aud, exp, sub"
+      - "Pas de JWT_SECRET — validation asymétrique uniquement"
+      - "Pas de données sensibles dans les claims (pas de mot de passe, pas de secrets)"
+      - "Provisionnement JIT configurable par tenant (TenantOidcConfig)"
+
+---
+
+roles:
+
+  hierarchy:
+    ROLE_SUPER_ADMIN: "Plateforme — gestion tenants, configuration globale"
+    ROLE_ADMIN: "Tenant — activation modules, gestion utilisateurs"
+    ROLE_USER: "Tenant — utilisation des modules activés"
+    ROLE_GUEST: "Session — participation anonyme (sessions live)"
+
+  rules:
+    - "Rôles portés via claims OIDC ou assignés localement en BDD"
+    - "Mapping claims → rôles configurable par tenant"
+    - "Module désactivé = 403 quelle que soit le rôle de l'utilisateur"
+    - "ROLE_GUEST ne peut pas activer ou configurer de module"
+    - "tenantId extrait exclusivement du TenantContext (token porteur) — jamais du body/header"
+
+---
+
+spring_security:
+
+  opaque_token_config:
+    description: "Configuration pour auth locale via opaque tokens"
+    pattern: |
+      @Configuration
+      @EnableWebSecurity
+      public class SecurityConfig {
+
+          @Bean
+          public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+              return http
+                  .csrf(AbstractHttpConfigurer::disable)
+                  .sessionManagement(s -> s.sessionCreationPolicy(STATELESS))
+                  .authorizeHttpRequests(auth -> auth
+                      .requestMatchers("/actuator/health", "/api/auth/**").permitAll()
+                      .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                      .requestMatchers("/api/superadmin/**").hasRole("SUPER_ADMIN")
+                      .anyRequest().authenticated()
+                  )
+                  .oauth2ResourceServer(oauth2 -> oauth2
+                      .opaqueToken(token -> token.introspector(opaqueTokenIntrospector()))
+                  )
+                  .build();
+          }
+
+          @Bean
+          OpaqueTokenIntrospector opaqueTokenIntrospector() {
+              return new PivotOpaqueTokenIntrospector(accessTokenRepository);
+          }
+      }
+
+  oidc_enterprise_config:
+    description: "Configuration pour auth enterprise OIDC (JWKS — pas de secret partagé)"
+    pattern: |
+      // Actif uniquement si OIDC enterprise configuré pour le tenant
+      .oauth2ResourceServer(oauth2 -> oauth2
+          .jwt(jwt -> jwt.jwkSetUri(tenantOidcConfig.getJwksUri()))
+      )
+
+  cors:
+    rule: "CORS configuré explicitement — pas de allowedOrigins(*) en production"
+    pattern: |
+      @Bean
+      CorsConfigurationSource corsConfigurationSource() {
+          CorsConfiguration config = new CorsConfiguration();
+          config.setAllowedOrigins(List.of(allowedOrigin));
+          config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH"));
+          config.setAllowCredentials(true);
+          UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+          source.registerCorsConfiguration("/api/**", config);
+          return source;
+      }
+
+  method_security:
+    rule: "@PreAuthorize sur les méthodes Service sensibles"
+    pattern: |
+      @PreAuthorize("hasRole('ADMIN') and @tenantService.isMember(authentication, #tenantId)")
+      public void activateModule(String moduleId, UUID tenantId) { ... }
+
+---
+
+oidc_pkce:
+
+  rules:
+    - "PKCE S256 obligatoire côté Angular (code_challenge_method=S256)"
+    - "Pas de client_secret côté navigateur"
+    - "State parameter validé pour prévenir CSRF sur le callback"
+
+---
+
+tenant_isolation:
+
+  rules:
+    - "tenantId extrait du TenantContext (token porteur) — jamais du body JSON ou query param"
+    - "Toute ressource avec {resourceId} dans le path → vérifier appartenance tenant avant traitement"
+    - "Appartenance invalide → 404 (pas 403 — ne pas confirmer l'existence cross-tenant)"
+    - "Test TI cross-tenant obligatoire sur chaque endpoint admin"
+
+---
+
+gate_checklist:
+  gate_2:
+    - "Aucun JWT_SECRET dans le code ou les variables d'environnement"
+    - "Opaque tokens : raw token jamais persisté, SHA-256 uniquement en BDD"
+    - "CORS explicite — pas de allowedOrigins(*)"
+    - "Module désactivé retourne 403 avant toute logique"
+    - "@PreAuthorize sur les méthodes admin sensibles"
+    - "tenantId extrait du TenantContext uniquement — jamais du body/header"
+    - "Test TI cross-tenant présent pour chaque endpoint admin"
+    - "Modification SecurityConfig/OIDC → hard block Gate 4, review humaine"

@@ -1,0 +1,5 @@
+# Code owners — PIVOT-COLLABORATIF-CORE
+# Toute modification, quel que soit le fichier, requiert la review de l'équipe core.
+# (Imposé par la branch protection : require_code_owner_reviews sur main.)
+
+* @ApoSkunz @0bno @tellebma @Destinea @leo-brgn

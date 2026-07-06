@@ -1,0 +1,109 @@
+name: SBOM
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  sbom:
+    name: SBOM - CycloneDX (Maven)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Java + Maven
+        uses: ./.github/actions/setup-java
+
+      - name: Generate SBOM - Maven CycloneDX
+        run: |
+          mvn --no-transfer-progress org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom \
+            -DoutputFormat=JSON \
+            -DoutputName=sbom-backend.cdx
+          cp target/sbom-backend.cdx.json sbom-backend.cdx.json
+
+      - name: Fetch previous release SBOM (diff)
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PREV_TAG=$(gh release list --limit 2 --json tagName --jq '.[1].tagName // ""')
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$PREV_TAG" ]; then
+            gh release download "$PREV_TAG" \
+              --pattern "sbom-backend.cdx.json" \
+              --output sbom-backend-prev.cdx.json 2>/dev/null \
+              && echo "prev_backend=true" >> "$GITHUB_OUTPUT" \
+              || echo "prev_backend=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prev_backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Diff SBOM vs release precedente
+        env:
+          PREV_BACKEND: ${{ steps.prev.outputs.prev_backend }}
+          PREV_TAG: ${{ steps.prev.outputs.prev_tag }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys
+
+          def load(path):
+              try:
+                  with open(path) as f:
+                      data = json.load(f)
+                  return {c['name']: c.get('version', '?') for c in data.get('components', [])}
+              except Exception:
+                  return {}
+
+          def diff_report(label, prev_path, curr_path, out):
+              prev = load(prev_path)
+              curr = load(curr_path)
+              if not prev:
+                  return
+              added   = {k: curr[k] for k in curr if k not in prev}
+              removed = {k: prev[k] for k in prev if k not in curr}
+              changed = {k: (prev[k], curr[k]) for k in curr if k in prev and curr[k] != prev[k]}
+              tag = os.environ.get("PREV_TAG", "previous release")
+              out.write(f'## {label} SBOM diff (vs {tag})\n\n')
+              if not (added or removed or changed):
+                  out.write('Aucun changement de dependances.\n\n')
+                  return
+              for k, v in sorted(added.items()):
+                  out.write(f'+ {k}  {v}\n')
+              for k, v in sorted(removed.items()):
+                  out.write(f'- {k}  {v}\n')
+              for k, (o, n) in sorted(changed.items()):
+                  out.write(f'~ {k}  {o} -> {n}\n')
+              out.write('\n')
+
+          summary_path = os.environ.get('GITHUB_STEP_SUMMARY', '/dev/stdout')
+          with open(summary_path, 'a') as out:
+              if os.environ.get('PREV_BACKEND') == 'true':
+                  diff_report('Backend (Java/Maven)', 'sbom-backend-prev.cdx.json', 'sbom-backend.cdx.json', out)
+          PYEOF
+
+      - name: Upload SBOM as CI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ github.event.release.tag_name || github.sha }}
+          path: sbom-backend.cdx.json
+          retention-days: 365
+
+      - name: Attach SBOM to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            sbom-backend.cdx.json \
+            --clobber

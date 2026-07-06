@@ -1,0 +1,129 @@
+skill:
+  id: pivot-i18n-backend
+  version: "1.0"
+  name: "i18n Backend — Spring MessageSource & Emails multilingues"
+  description: >
+    Internationalisation côté Spring Boot : MessageSource, fichiers messages_*.properties,
+    résolution de locale pour les emails Thymeleaf, locale owner vs locale sender.
+    Critique : fallback-to-system-locale DOIT être false (Docker JVM = locale EN par défaut).
+  loaded_by:
+    - Dev_Agent
+    - Expert_RGPD
+
+---
+
+message_source:
+
+  configuration:
+    critical_flag: "fallback-to-system-locale: false — OBLIGATOIRE"
+    reason: >
+      Docker JVM utilise la locale système EN. Avec fallback=true (défaut Spring),
+      messages_fr.properties non trouvé → fallback vers EN → emails en anglais pour
+      les utilisateurs français. Désactiver le fallback force l'usage de messages.properties
+      comme fichier de base (français par défaut dans PIVOT).
+    yaml: |
+      spring:
+        messages:
+          basename: messages
+          encoding: UTF-8
+          use-code-as-default-message: false
+          fallback-to-system-locale: false
+
+  file_structure:
+    base: "src/main/resources/messages.properties        ← français (langue par défaut PIVOT)"
+    french: "src/main/resources/messages_fr.properties   ← français explicite (optionnel, même contenu)"
+    english: "src/main/resources/messages_en.properties  ← anglais"
+    rule: "messages.properties = contenu FR — utilisé si locale non trouvée"
+
+  key_conventions:
+    pattern: "domaine.action.element"
+    examples:
+      - "contact.confirmation.subject"
+      - "contact.confirmation.greeting"
+      - "contact.notification.subject"
+      - "auth.email.reset.subject"
+      - "error.validation.email.invalid"
+
+---
+
+email_locale:
+
+  sender_vs_owner:
+    sender: "Locale extraite du champ `lang` du DTO (envoyé par le formulaire Angular)"
+    owner: "Locale fixe définie par `PIVOT_OWNER_LANG` (env var, défaut `fr`)"
+    rule: "Confirmation → locale sender. Notification owner → locale owner (indépendant du sender)"
+    pattern: |
+      // ContactService.java
+      private final Locale ownerLocale;
+
+      public ContactService(
+              final EmailService emailService,
+              @Value("${pivot.app.owner-mail:support@pivot.app}") final String ownerEmail,
+              @Value("${pivot.app.owner-lang:fr}") final String ownerLang) {
+          this.emailService = emailService;
+          this.ownerEmail = ownerEmail;
+          this.ownerLocale = EmailService.toLocale(ownerLang);
+      }
+
+      public void processContact(final ContactRequestDto dto) {
+          final Locale senderLocale = EmailService.toLocale(dto.lang());
+          emailService.sendContactConfirmation(dto.email(), dto.message(), senderLocale);
+          emailService.sendContactNotification(ownerEmail, dto.email(), dto.message(), ownerLocale);
+      }
+
+  locale_resolution:
+    pattern: |
+      // EmailService.java
+      public static Locale toLocale(final String lang) {
+          if (lang == null || lang.isBlank()) return Locale.FRENCH;
+          return switch (lang.toLowerCase()) {
+              case "en", "en-us", "en-gb" -> Locale.ENGLISH;
+              default -> Locale.FRENCH;
+          };
+      }
+
+  thymeleaf_context:
+    rule: "Passer la locale explicitement au Context Thymeleaf — ne pas compter sur la locale par défaut"
+    pattern: |
+      // EmailService.java
+      final Context ctx = new Context(locale);
+      ctx.setVariable("message", message);
+      final String html = templateEngine.process("emails/contact-confirmation", ctx);
+    note: >
+      SpringMessageResolver utilise la locale du Context pour résoudre #{key} dans les templates.
+      Sans locale explicite, Spring peut tomber sur la locale système (Docker = EN).
+
+---
+
+thymeleaf_templates:
+
+  location: "src/main/resources/templates/emails/"
+  key_syntax: "#{contact.confirmation.greeting(${senderName})}"
+  pattern: |
+    <!-- emails/contact-confirmation.html -->
+    <html xmlns:th="http://www.thymeleaf.org">
+      <body>
+        <p th:text="#{contact.confirmation.greeting}">Bonjour,</p>
+        <p th:text="#{contact.confirmation.body}">Nous avons bien reçu votre message.</p>
+      </body>
+    </html>
+
+---
+
+env_vars:
+
+  owner_lang:
+    key: "PIVOT_OWNER_LANG"
+    default: "fr"
+    values: ["fr", "en"]
+    usage: "compose.yml → pivot-core service → environment"
+
+---
+
+gate_checklist:
+  gate_2:
+    - "fallback-to-system-locale: false dans application.yml"
+    - "Locale owner extraite de PIVOT_OWNER_LANG (variable env), pas du sender"
+    - "Context Thymeleaf instancié avec locale explicite"
+    - "Test TU : sender FR → email FR, owner lang EN → notif EN (indépendant)"
+    - "messages.properties présent comme fallback FR"

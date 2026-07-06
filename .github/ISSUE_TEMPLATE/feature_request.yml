@@ -1,0 +1,63 @@
+name: Feature Request
+description: Proposer une fonctionnalité (hors US tracées en interne)
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > Pour les fonctionnalités tracées en backlog interne, utiliser le template **User Story**.
+        > Ce template est destiné aux contributions externes et suggestions communautaires.
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module concerné
+      options:
+        - core
+        - whiteboard
+        - session
+        - roadmap
+        - survey
+        - quiz
+        - auth
+        - admin
+        - nouveau module
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase cible estimée
+      options:
+        - MVP
+        - v1-enterprise
+        - phase-3
+        - Inconnu
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problème / Besoin
+      description: Quel problème cette feature résout ? Pour qui ?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solution proposée
+      description: Décrire la solution souhaitée
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considérées
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexte additionnel
+      description: Captures d'écran, exemples d'autres outils, contraintes…

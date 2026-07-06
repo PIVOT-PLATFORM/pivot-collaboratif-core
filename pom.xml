@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.0</version>
+		<relativePath/>
+	</parent>
+	<groupId>fr.pivot</groupId>
+	<artifactId>pivot-collaboratif-core</artifactId>
+	<version>0.1.0</version>
+	<name>pivot-collaboratif-core</name>
+	<description>PIVOT collaborative suite — module Collaboratif (whiteboard, quiz, session live, formulaire)</description>
+	<url>https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core</url>
+	<licenses>
+		<license>
+			<name>AGPL-3.0-or-later</name>
+			<url>https://www.gnu.org/licenses/agpl-3.0.txt</url>
+		</license>
+	</licenses>
+
+	<properties>
+		<java.version>25</java.version>
+		<!-- JaCoCo 0.8.13 + SpotBugs ASM 9.7 support class 68 max; revert when tools add Java 25 support -->
+		<maven.compiler.release>24</maven.compiler.release>
+		<testcontainers.version>1.21.4</testcontainers.version>
+		<!-- Build reproductible : timestamp d'entrées d'archive figé → même source = même
+		     digest de JAR. Sous-tend la vérification de digest sur reprise (release.yml). -->
+		<project.build.outputTimestamp>2026-07-06T09:00:00Z</project.build.outputTimestamp>
+	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.testcontainers</groupId>
+				<artifactId>testcontainers-bom</artifactId>
+				<version>${testcontainers.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+	<!--
+	  fr.pivot:pivot-core-starter — PAS ENCORE AJOUTÉ.
+	  pivot-core ne publie aujourd'hui aucun artefact sous ce nom : son pom.xml publie
+	  `fr.pivot:pivot-core` (l'application shell complète, version alignée sur pivot-core lui-même),
+	  pas une bibliothèque "starter" séparée avec les seuls packages fr.pivot.core.* (auth, tenant,
+	  team, modules, db). Tant que ce starter n'existe pas comme artefact publiable et versionné
+	  indépendamment, toute dépendance ici serait une coordonnée Maven fictive. Voir CLAUDE.md
+	  (section "Dépendance pivot-core-starter — état réel") et E30/E17 dans pivot-docs.
+	  → Sécurité (opaque tokens, TenantContext) et intégration module registry : différées jusqu'à
+	  publication réelle de ce starter (EN17.x).
+	-->
+	<dependencies>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-redis</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-web</artifactId>
+		</dependency>
+		<!--
+		  Spring Boot 4 moved FlywayAutoConfiguration out of spring-boot-autoconfigure
+		  into the dedicated spring-boot-flyway module. flyway-core alone provides the
+		  library but NOT the autoconfig that runs migrations on startup — without this
+		  module Flyway never executes (no migration, no log). Required for db/migration.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-flyway</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<!-- Test -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+
+			<!-- Cible Java 24 (class 68) : JaCoCo 0.8.13 + SpotBugs ASM 9.7 ne supportent pas class 69 -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<configuration>
+					<release>24</release>
+				</configuration>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-checkstyle-plugin</artifactId>
+				<version>3.6.0</version>
+				<configuration>
+					<configLocation>checkstyle.xml</configLocation>
+					<failOnViolation>true</failOnViolation>
+					<violationSeverity>error</violationSeverity>
+					<consoleOutput>true</consoleOutput>
+				</configuration>
+				<dependencies>
+					<dependency>
+						<groupId>com.puppycrawl.tools</groupId>
+						<artifactId>checkstyle</artifactId>
+						<version>10.21.4</version>
+					</dependency>
+				</dependencies>
+			</plugin>
+
+			<plugin>
+				<groupId>com.github.spotbugs</groupId>
+				<artifactId>spotbugs-maven-plugin</artifactId>
+				<version>4.9.3.0</version>
+				<configuration>
+					<effort>Max</effort>
+					<threshold>Medium</threshold>
+					<failOnError>true</failOnError>
+					<excludeFilterFile>spotbugs-exclude.xml</excludeFilterFile>
+				</configuration>
+				<!-- ASM 9.8 : supporte class 69 (Java 25) pour analyse JDK runtime -->
+				<dependencies>
+					<dependency>
+						<groupId>org.ow2.asm</groupId>
+						<artifactId>asm</artifactId>
+						<version>9.8</version>
+					</dependency>
+					<dependency>
+						<groupId>org.ow2.asm</groupId>
+						<artifactId>asm-analysis</artifactId>
+						<version>9.8</version>
+					</dependency>
+					<dependency>
+						<groupId>org.ow2.asm</groupId>
+						<artifactId>asm-commons</artifactId>
+						<version>9.8</version>
+					</dependency>
+					<dependency>
+						<groupId>org.ow2.asm</groupId>
+						<artifactId>asm-tree</artifactId>
+						<version>9.8</version>
+					</dependency>
+					<dependency>
+						<groupId>org.ow2.asm</groupId>
+						<artifactId>asm-util</artifactId>
+						<version>9.8</version>
+					</dependency>
+				</dependencies>
+			</plugin>
+		</plugins>
+	</build>
+
+	<profiles>
+		<profile>
+			<id>coverage</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.jacoco</groupId>
+						<artifactId>jacoco-maven-plugin</artifactId>
+						<version>0.8.13</version>
+						<executions>
+							<execution>
+								<id>prepare-agent</id>
+								<goals><goal>prepare-agent</goal></goals>
+							</execution>
+							<execution>
+								<id>report</id>
+								<phase>verify</phase>
+								<goals><goal>report</goal></goals>
+								<configuration>
+									<excludes>
+										<exclude>fr/pivot/collaboratif/*Application.class</exclude>
+									</excludes>
+								</configuration>
+							</execution>
+							<execution>
+								<id>check</id>
+								<phase>verify</phase>
+								<goals><goal>check</goal></goals>
+								<configuration>
+									<!--
+									  Bootstrap-only : à ce stade le module n'a qu'une classe d'entrée Spring Boot
+									  sans logique métier (aucune US implémentée). Sans cette exclusion, la ligne
+									  SpringApplication.run(...) de main() reste non couverte par un test de
+									  contexte (@SpringBootTest n'invoque pas main()) et fait mécaniquement
+									  échouer le seuil BUNDLE LINE >= 80% dès le premier commit, avant tout code
+									  réel. pivot-core n'a pas besoin de cette exclusion (des dizaines de classes
+									  testées diluent le ratio) — à retirer ici dès que la couverture réelle du
+									  module rend l'exclusion superflue.
+									-->
+									<excludes>
+										<exclude>fr/pivot/collaboratif/*Application.class</exclude>
+									</excludes>
+									<rules>
+										<rule>
+											<element>BUNDLE</element>
+											<limits>
+												<limit>
+													<counter>LINE</counter>
+													<value>COVEREDRATIO</value>
+													<minimum>0.80</minimum>
+												</limit>
+											</limits>
+										</rule>
+									</rules>
+								</configuration>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
+
+	<!-- Cible de `mvn deploy` (job "publish" de release.yml). L'id doit correspondre au
+	     server-id "github" configuré par setup-java. GitHub Packages utilise la même URL
+	     pour releases et snapshots. -->
+	<distributionManagement>
+		<repository>
+			<id>github</id>
+			<name>GitHub Packages</name>
+			<url>https://maven.pkg.github.com/PIVOT-PLATFORM/pivot-collaboratif-core</url>
+		</repository>
+		<snapshotRepository>
+			<id>github</id>
+			<name>GitHub Packages</name>
+			<url>https://maven.pkg.github.com/PIVOT-PLATFORM/pivot-collaboratif-core</url>
+		</snapshotRepository>
+	</distributionManagement>
+
+</project>

@@ -1,0 +1,97 @@
+name: User Story
+description: Nouvelle fonctionnalité ou amélioration
+labels: ["us"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## User Story
+        Remplir tous les champs. Les critères d'acceptation sont le contrat d'implémentation — ils doivent être testables.
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module cible
+      options:
+        - core
+        - whiteboard
+        - session
+        - roadmap
+        - survey
+        - quiz
+        - auth
+        - admin
+    validations:
+      required: true
+
+  - type: textarea
+    id: story
+    attributes:
+      label: Story
+      description: Format standard
+      placeholder: |
+        **En tant que** [admin / utilisateur / participant anonyme]
+        **Je veux** [action]
+        **Afin de** [bénéfice]
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Critères d'acceptation
+      description: Format Given/When/Then. Au moins 2 critères dont 1 cas d'erreur et 1 critère sécurité.
+      placeholder: |
+        - [ ] Given [contexte], when [action], then [résultat observable]
+        - [ ] Error case: given [input invalide], system retourne [erreur / status code]
+        - [ ] Security: [propriété de sécurité garantie]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: size
+    attributes:
+      label: Estimation
+      options:
+        - XS (< 2h)
+        - S (2–4h)
+        - M (4–8h)
+        - L (1–2j)
+        - XL (> 2j)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priorité
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options:
+        - MVP
+        - v1-enterprise
+        - phase-3
+    validations:
+      required: true
+
+  - type: input
+    id: dependencies
+    attributes:
+      label: Dépendances
+      placeholder: "#42, #67 (laisser vide si aucune)"
+
+  - type: textarea
+    id: technical-notes
+    attributes:
+      label: Notes techniques
+      description: Context technique, contraintes, décisions d'architecture liées (optionnel)

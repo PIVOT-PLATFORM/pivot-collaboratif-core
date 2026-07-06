@@ -1,0 +1,60 @@
+name: PR image cleanup
+
+# Supprime l'image de preview `pr-<num>` (poussée par ci.yml / job docker-preview)
+# quand la PR est fermée ou mergée — pas d'accumulation d'images orphelines dans GHCR.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  packages: write
+
+jobs:
+  delete-preview-image:
+    name: Delete PR preview image
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Same-repo uniquement : une PR de fork n'a jamais poussé d'image (pas de token).
+    if: github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Delete ghcr preview image pr-<num>
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          # Nom de package REST = chemin après l'owner. L'image est poussée vers
+          # ghcr.io/<owner>/pivot-collaboratif-core/pivot-collaboratif-core-preview
+          # (github.repository = <owner>/pivot-collaboratif-core), donc le package est
+          # "pivot-collaboratif-core/pivot-collaboratif-core-preview". Package dédié aux
+          # previews — jamais l'image de prod "pivot-collaboratif-core/pivot-collaboratif-core".
+          PKG: pivot-collaboratif-core/pivot-collaboratif-core-preview
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          PKG_ENC=$(printf '%s' "$PKG" | sed 's#/#%2F#g')
+          TAG="pr-${PR}"
+          echo "Recherche de la version container taguée ${TAG} dans ${PKG}…"
+
+          # Lecture des versions. Un 404 = package inexistant (aucune preview jamais
+          # poussée) → cas attendu, sortie propre. Toute AUTRE erreur (403, réseau…)
+          # fait échouer le workflow — pas de masquage par "|| true".
+          if ! VERSIONS=$(gh api --paginate "/orgs/${ORG}/packages/container/${PKG_ENC}/versions" 2> err.log); then
+            if grep -qi "Not Found" err.log; then
+              echo "Package ${PKG} absent — rien à nettoyer."
+              exit 0
+            fi
+            echo "Erreur non gérée lors de la lecture des versions :" >&2
+            cat err.log >&2
+            exit 1
+          fi
+
+          IDS=$(printf '%s' "$VERSIONS" | jq -r ".[] | select(.metadata.container.tags[]? == \"${TAG}\") | .id")
+          if [ -z "${IDS}" ]; then
+            echo "Aucune image ${TAG} (PR sans build de preview, ou déjà supprimée). Rien à faire."
+            exit 0
+          fi
+          for id in ${IDS}; do
+            echo "Suppression de la version ${id} (tag ${TAG})"
+            gh api -X DELETE "/orgs/${ORG}/packages/container/${PKG_ENC}/versions/${id}"
+          done

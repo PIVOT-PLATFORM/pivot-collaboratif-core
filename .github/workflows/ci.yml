@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  # -----------------------------------------
+  # 1. QUALITE CODE - BACKEND JAVA
+  # -----------------------------------------
+  quality-backend:
+    name: Code Quality - Java
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Java + Maven
+        uses: ./.github/actions/setup-java
+
+      - name: Compile + Checkstyle + SpotBugs
+        run: mvn --no-transfer-progress compile checkstyle:check spotbugs:check -Dmaven.compiler.release=24
+
+  # -----------------------------------------
+  # 2. TESTS BACKEND (TU + TI)
+  # -----------------------------------------
+  tests-backend:
+    name: Tests Backend (TU + TI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      # PostgreSQL is supplied by Testcontainers (AbstractIntegrationTest @ServiceConnection).
+      # Only Redis remains as an external CI service.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Java + Maven
+        uses: ./.github/actions/setup-java
+
+      - name: Run tests with coverage
+        env:
+          # Datasource is provided by Testcontainers (@ServiceConnection) — no static URL needed.
+          SPRING_REDIS_HOST: localhost
+          SPRING_REDIS_PORT: 6379
+        run: mvn --no-transfer-progress verify -Pcoverage -Dmaven.compiler.release=24
+
+      # Compiled classes + coverage shared with the sonar job (no recompile downstream).
+      - name: Upload backend build (classes + coverage)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-build
+          path: |
+            target/classes/
+            target/test-classes/
+            target/site/jacoco/jacoco.xml
+          retention-days: 1
+
+  # -----------------------------------------
+  # 3. SONARCLOUD (CI analysis — Automatic Analysis désactivée côté projet)
+  # -----------------------------------------
+  sonar:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    needs: [tests-backend]
+    timeout-minutes: 15
+    if: github.actor != 'dependabot[bot]'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Java + Maven
+        uses: ./.github/actions/setup-java
+
+      - name: Download backend build (classes + coverage)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: backend-build
+          path: target/
+
+      - name: SonarCloud Scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn --no-transfer-progress sonar:sonar \
+            -Dmaven.compiler.release=24 \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.organization=pivot-platform \
+            -Dsonar.projectKey=PIVOT-PLATFORM_pivot-collaboratif-core \
+            -Dsonar.token="${SONAR_TOKEN}"
+
+  # -----------------------------------------
+  # 4. SCA - AUDIT DEPENDANCES (Trivy)
+  # -----------------------------------------
+  sca:
+    name: SCA - Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Trivy - Maven pom.xml
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: sarif
+          output: trivy-backend.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        if: always() && hashFiles('trivy-backend.sarif') != ''
+        with:
+          sarif_file: trivy-backend.sarif
+          category: trivy-sca-backend
+
+  # Les jobs réservés aux PR (Mutation PITest + previews Docker/Maven) vivent dans
+  # pr-preview.yml (déclenché uniquement on: pull_request) — pour ne pas apparaître en
+  # "skipped" sur les runs push (main/develop).

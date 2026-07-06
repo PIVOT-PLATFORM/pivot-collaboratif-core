@@ -1,0 +1,15 @@
+title = "PIVOT Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "PIVOT CI credentials and test paths"
+regexes = [
+    '''ci-(test|e2e|dast|mutation|lighthouse)-[a-z-]*secret-key[a-z0-9-]*''',
+    '''Pivot@DastTest1!'''
+]
+paths = [
+    '''src/test/.*''',
+    '''.*\.example$'''
+]

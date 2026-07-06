@@ -1,0 +1,68 @@
+name: Epic
+description: Groupe de fonctionnalités liées à un objectif produit
+labels: ["epic"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Epic
+        Un Epic regroupe plusieurs User Stories contribuant au même objectif produit.
+
+  - type: input
+    id: title
+    attributes:
+      label: Objectif de l'Epic
+      placeholder: "Ex : Système de modules activables par les admins"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module principal
+      options:
+        - core
+        - whiteboard
+        - session
+        - roadmap
+        - survey
+        - quiz
+        - auth
+        - admin
+        - transverse
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Périmètre fonctionnel, valeur apportée, utilisateurs ciblés
+    validations:
+      required: true
+
+  - type: textarea
+    id: user-stories
+    attributes:
+      label: User Stories incluses
+      description: Liste les US (issues) qui font partie de cet Epic
+      placeholder: |
+        - [ ] #xxx : titre de l'US
+        - [ ] #xxx : titre de l'US
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options:
+        - MVP
+        - v1-enterprise
+        - phase-3
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Critères de complétude de l'Epic
+      description: L'Epic est terminée quand…

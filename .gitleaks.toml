@@ -1,0 +1,11 @@
+[extend]
+  useDefault = true
+
+[allowlist]
+  description = "Known false positives in old commits — test config values, not real secrets"
+  commits = [
+    "645309f7fd3800120520be43e1eaf178c169fcd0",
+    "bac448be28b4eb38105dcd752296520dd032dfde",
+    "6930082aeaa5f800aab86a63bf4c7486173e63af",
+    "d0b04ab23ce2892f008f315a628b1d9af84d983f"
+  ]

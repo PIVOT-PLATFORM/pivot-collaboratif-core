@@ -1,0 +1,100 @@
+skill:
+  id: pivot-security-redteam
+  version: "1.0"
+  name: "Red Team — Vecteurs d'attaque Backend"
+  description: >
+    Checklist Red Team pour PIVOT-CORE : OWASP Top 10, IDOR, injection SQL,
+    CSRF, JWT/opaque token attacks, OIDC bypass, escalade de privilèges.
+    Chargé pour toute US touchant auth, admin, modules ou données utilisateur.
+  loaded_by:
+    - Expert_Red_Team
+    - Security_Agent
+    - Expert_Blue_Team
+
+---
+
+attack_vectors:
+
+  broken_access_control:
+    risks:
+      - "IDOR : accès à la ressource d'un autre tenant via {resourceId} dans le path"
+      - "Privilege escalation : ROLE_USER sur endpoint ROLE_ADMIN"
+      - "tenantId/userId forgé dans le body ou un header custom → cross-tenant leak"
+      - "DELETE /admin/users/{userId} sans vérification d'appartenance tenant"
+    checks:
+      - "Test TI : token tenant-B sur ressource tenant-A → 404 (pas 403)"
+      - "Test TI : ROLE_USER sur endpoint /admin/* → 403"
+      - "tenantId extrait du TenantContext — jamais du body ou header"
+      - "Avant tout traitement : vérifier resource.tenantId == token.tenantId"
+
+  injection:
+    risks:
+      - "SQL injection via @Query JPQL avec concaténation de paramètre"
+      - "Log injection : données utilisateur non traitées dans les messages de log"
+      - "Path traversal via paramètre fileName ou ressource dynamique"
+    checks:
+      - "@Query utilise des paramètres bindés (:param) — jamais de concaténation"
+      - "Données utilisateur tronquées/encodées dans les logs"
+
+  authentication_failures:
+    risks:
+      - "Brute force sur /auth/login (pas de rate limiting)"
+      - "Token opaque exposé dans les logs ou en réponse API"
+      - "Refresh token réutilisable après rotation (pas d'invalidation)"
+      - "Enumération d'utilisateurs via les messages d'erreur différenciés"
+    checks:
+      - "Rate limiting sur /auth/login, /auth/refresh, /auth/forgot-password"
+      - "Token jamais loggué (ni raw ni hash SHA-256)"
+      - "Rotation : ancienne session marquée invalide en BDD immédiatement"
+      - "Anti-énumération : même réponse 200 si email inexistant ou présent"
+
+  security_misconfiguration:
+    risks:
+      - "CORS allowedOrigins(*) en production"
+      - "Actuator exposé sans authentification (heap dump, env, beans)"
+      - "Stack trace exposée dans les réponses d'erreur"
+      - "Headers de sécurité manquants (X-Frame-Options, X-Content-Type-Options)"
+    checks:
+      - "CORS : origines explicites uniquement"
+      - "Actuator : uniquement health, info, prometheus — protégés par rôle"
+      - "GlobalExceptionHandler : message générique en réponse, detail en log"
+
+  sensitive_data_exposure:
+    risks:
+      - "Entité JPA exposée directement en API (champ password hash, tenantId interne)"
+      - "Email confirmé en réponse d'erreur (user enumeration)"
+      - "PII dans les logs en clair"
+    checks:
+      - "DTOs pour toutes les sorties — jamais entité JPA"
+      - "Réponse identique pour email existant / inexistant sur tous les flux auth"
+
+  oidc_opaque_attacks:
+    risks:
+      - "Algorithm confusion si migration JWT résiduelle"
+      - "PKCE bypass si state/nonce non validés côté backend"
+      - "Token non révoqué en BDD après logout → token replay"
+    checks:
+      - "Spring Security valide via JWKS — jamais de validation JWT manuelle"
+      - "State et nonce validés par Spring Security OAuth2"
+      - "Logout : token marqué REVOKED en BDD immédiatement"
+
+  mass_assignment:
+    risks:
+      - "userId ou role passés dans le body d'un endpoint /account/* → élévation de privilège"
+      - "tenantId passé dans le body d'un endpoint admin → cross-tenant"
+    checks:
+      - "DTOs request n'incluent jamais userId, role, tenantId"
+      - "Identité extraite du token porteur exclusivement"
+
+---
+
+gate_checklist:
+  gate_3:
+    - "Aucun tenantId/userId accepté du body ou header custom"
+    - "Test TI cross-tenant présent sur chaque endpoint admin"
+    - "@Query avec paramètres bindés — zéro concaténation SQL"
+    - "Token jamais loggué (raw ou hash)"
+    - "CORS sans wildcard en production"
+    - "Rate limiting présent sur les endpoints auth"
+    - "GlobalExceptionHandler présent (pas de stack trace en réponse)"
+    - "Anti-énumération sur tous les flux email-based"
