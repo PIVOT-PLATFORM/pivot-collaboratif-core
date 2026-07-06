@@ -1,15 +1,92 @@
 # TODO — Setup manuel restant (pivot-collaboratif-core)
 
-Ce repo a été bootstrappé avec :
-- Branch protection classique sur `main` (1 review requise, 4 status checks **self-contained**
-  requis — voir liste ci-dessous)
-- Ruleset `protect-main` (deletion / non-fast-forward / historique linéaire) — identique à
-  `pivot-core`
+## ⚠️ BLOQUANT #1 — Branch protection / rulesets PAS appliqués (à faire en premier)
 
-**Volontairement PAS activé** : le ruleset complet (10+ checks incluant SonarCloud, style
-`main-protection` sur `pivot-core`) — il rendrait `main` définitivement non mergeable tant que
-les items ci-dessous ne sont pas faits (pas de projet SonarCloud, pas de secrets configurés pour
-ce repo précis).
+Le code, la CI/CD, la sécurité et la documentation sont bootstrappés et pushés sur `main`. **Mais
+ni la branch protection classique, ni AUCUN ruleset n'ont pu être créés depuis cette session** —
+l'API GitHub a refusé toute tentative de création (PUT `branches/main/protection` **et** POST
+`/rulesets`) avec :
+
+```
+403 — "Upgrade to GitHub Pro or make this repository public to enable this feature."
+```
+
+Constats faits pendant le bootstrap (pour diagnostiquer, pas juste "réessayer") :
+- **Lecture** des rulesets existants sur `pivot-core`/`pivot-ui` : ✅ fonctionne (utilisé pour
+  produire ce document).
+- **Écriture** (PUT protection / POST ruleset) sur `pivot-collaboratif-core` **et**
+  `pivot-collaboratif-ui` : ❌ même erreur 403 sur les deux repos.
+- Le header `x-accepted-github-permissions: administration=write` est présent sur la requête —
+  mais le message d'erreur retourné est le message spécifique "Upgrade to GitHub Pro…", **pas**
+  le message générique `"Resource not accessible by personal access token"` observé ailleurs
+  dans cette session pour de vrais manques de scope (ex. lecture des secrets organisation) — ce
+  qui pointe vers une restriction de **plan/billing** plutôt qu'un problème de token.
+- `PATCH` sur le repo (changer `default_branch`) et suppression de refs ont fonctionné avec le
+  même token → le token a bien des droits d'administration générale sur le repo, ce qui rend
+  d'autant plus surprenant le blocage spécifique à branch-protection/rulesets.
+- Autre piste possible (non vérifiée) : org avec un nombre de repos "protégés" limité par le
+  plan actuel, déjà atteint par `pivot-core` + `pivot-ui` + les autres repos de la plateforme.
+
+**Action requise du mainteneur** : vérifier le plan GitHub de l'organisation PIVOT-PLATFORM
+(Settings → Billing) et/ou les permissions du token/app utilisé pour l'administration des repos,
+puis exécuter les commandes ci-dessous (prêtes à copier-coller, non testées faute d'accès) une
+fois débloqué.
+
+### Commandes prêtes à l'emploi une fois débloqué
+
+**1. Branch protection classique** (1 review, 4 checks self-contained) :
+```bash
+cat > /tmp/protection-collaboratif-core.json << 'EOF'
+{
+  "required_status_checks": {
+    "strict": false,
+    "contexts": [
+      "Code Quality - Java",
+      "Tests Backend (TU + TI)",
+      "Maven deploy preview (PR)",
+      "Docker preview image (PR)"
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 1,
+    "require_last_push_approval": false
+  },
+  "restrictions": null,
+  "required_linear_history": false,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": false,
+  "lock_branch": false,
+  "allow_fork_syncing": false
+}
+EOF
+gh api repos/PIVOT-PLATFORM/pivot-collaboratif-core/branches/main/protection -X PUT --input /tmp/protection-collaboratif-core.json
+```
+
+**2. Ruleset `protect-main`** (deletion / non-fast-forward / historique linéaire — identique à
+`pivot-core`) :
+```bash
+cat > /tmp/ruleset-protect-main-collaboratif-core.json << 'EOF'
+{
+  "name": "protect-main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/heads/main"], "exclude": [] } },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "required_linear_history" }
+  ]
+}
+EOF
+gh api repos/PIVOT-PLATFORM/pivot-collaboratif-core/rulesets -X POST --input /tmp/ruleset-protect-main-collaboratif-core.json
+```
+
+---
 
 ## À faire avant d'activer le ruleset complet (tous les checks)
 
