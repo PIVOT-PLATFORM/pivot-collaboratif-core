@@ -24,4 +24,15 @@ public interface BoardShareTokenRepository extends JpaRepository<BoardShareToken
     Optional<BoardShareToken> findActiveByIdAndBoardId(
             @Param("id") UUID id,
             @Param("boardId") UUID boardId);
+
+    /**
+     * Finds a token by its SHA-256 hash, regardless of state (used for join flow).
+     *
+     * <p>The caller is responsible for checking revocation, expiry, and use-count
+     * after retrieval.
+     *
+     * @param tokenHash the SHA-256 hex digest of the plain token
+     * @return the matching token record, or empty if not found
+     */
+    Optional<BoardShareToken> findByTokenHash(String tokenHash);
 }

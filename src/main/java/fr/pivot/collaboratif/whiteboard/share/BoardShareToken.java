@@ -199,6 +199,13 @@ public class BoardShareToken {
     }
 
     /**
+     * Atomically increments the use count, recording one successful join.
+     */
+    public void incrementUseCount() {
+        this.useCount++;
+    }
+
+    /**
      * Returns {@code true} if this token is currently valid (not revoked, not expired,
      * and within its use limit).
      *
