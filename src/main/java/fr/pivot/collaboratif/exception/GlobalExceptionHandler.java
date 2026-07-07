@@ -13,7 +13,9 @@ import java.util.Map;
  * Global exception handler that maps domain exceptions to RFC 7807 Problem Detail responses.
  *
  * <p>Handles board-specific domain exceptions ({@link BoardNotFoundException},
- * {@link BoardAccessDeniedException}, {@link WhiteboardModuleDisabledException}) as well as
+ * {@link BoardAccessDeniedException}, {@link WhiteboardModuleDisabledException},
+ * {@link BoardShareTokenNotFoundException}, {@link BoardShareTokenExpiredException},
+ * {@link BoardAlreadyMemberException}, {@link TooManyRequestsException}) as well as
  * Spring MVC validation failures ({@link MethodArgumentNotValidException}).
  */
 @RestControllerAdvice
@@ -73,6 +75,48 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleShareTokenNotFound(final BoardShareTokenNotFoundException ex) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle("Share token not found");
+        problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 410 Gone when a share token has expired or exhausted its use count.
+     *
+     * @param ex the thrown exception
+     * @return a 410 problem detail
+     */
+    @ExceptionHandler(BoardShareTokenExpiredException.class)
+    public ProblemDetail handleShareTokenExpired(final BoardShareTokenExpiredException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.GONE);
+        problem.setTitle("Share token expired");
+        problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 409 Conflict when the user is already a member of the board.
+     *
+     * @param ex the thrown exception
+     * @return a 409 problem detail
+     */
+    @ExceptionHandler(BoardAlreadyMemberException.class)
+    public ProblemDetail handleAlreadyMember(final BoardAlreadyMemberException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Already a member");
+        problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 429 Too Many Requests when the rate limit is exceeded.
+     *
+     * @param ex the thrown exception
+     * @return a 429 problem detail
+     */
+    @ExceptionHandler(TooManyRequestsException.class)
+    public ProblemDetail handleTooManyRequests(final TooManyRequestsException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.TOO_MANY_REQUESTS);
+        problem.setTitle("Too many requests");
         problem.setDetail(ex.getMessage());
         return problem;
     }
