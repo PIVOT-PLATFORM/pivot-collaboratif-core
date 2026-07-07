@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>fr.pivot</groupId>
 	<artifactId>pivot-collaboratif-core</artifactId>
-	<version>1.0.0</version>
+	<version>0.0.0</version>
 	<name>pivot-collaboratif-core</name>
 	<description>PIVOT collaborative suite — module Collaboratif (whiteboard, quiz, session live, formulaire)</description>
 	<url>https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core</url>
