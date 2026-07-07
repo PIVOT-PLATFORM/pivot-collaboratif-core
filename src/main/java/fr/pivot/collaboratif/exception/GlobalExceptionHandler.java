@@ -63,6 +63,21 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Returns HTTP 404 when a share token does not exist, belongs to a different board,
+     * or has already been revoked.
+     *
+     * @param ex the thrown exception
+     * @return a 404 problem detail
+     */
+    @ExceptionHandler(BoardShareTokenNotFoundException.class)
+    public ProblemDetail handleShareTokenNotFound(final BoardShareTokenNotFoundException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Share token not found");
+        problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
      * Returns HTTP 400 with a machine-readable {@code code} property for board title
      * validation failures.
      *
