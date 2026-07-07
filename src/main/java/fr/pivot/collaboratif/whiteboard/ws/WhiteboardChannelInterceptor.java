@@ -1,5 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.ws;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,14 +60,24 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
     /** Redis key prefix for per-user per-board rate-limit counters. */
     private static final String RATE_KEY_PREFIX = "ws:rate:";
 
+    /** Redis key prefix for per-session consecutive rate-limit violation strike counters. */
+    private static final String STRIKES_KEY_PREFIX = "ws:strikes:";
+
     /** Maximum allowed STOMP SEND frames per user per board per second. */
     private static final int MAX_MESSAGES_PER_SECOND = 30;
+
+    /** Number of consecutive rate-limit violations before effective session close. */
+    private static final int MAX_STRIKES = 3;
 
     /** Window duration for the rate-limit counter (1 second fixed window). */
     private static final Duration RATE_WINDOW = Duration.ofSeconds(1);
 
+    /** Strike counter TTL — resets automatically after 60 s of clean traffic. */
+    private static final Duration STRIKES_TTL = Duration.ofSeconds(60);
+
     private final MembershipCacheService membershipCacheService;
     private final StringRedisTemplate redisTemplate;
+    private final Counter throttledCounter;
 
     /**
      * Messaging template used to deliver error notifications to denied sessions.
@@ -80,12 +92,17 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      *
      * @param membershipCacheService Redis+DB membership cache for authorization decisions
      * @param redisTemplate          Redis client for rate-limit counters
+     * @param meterRegistry          Micrometer registry for the throttled-messages counter
      */
     public WhiteboardChannelInterceptor(
             final MembershipCacheService membershipCacheService,
-            final StringRedisTemplate redisTemplate) {
+            final StringRedisTemplate redisTemplate,
+            final MeterRegistry meterRegistry) {
         this.membershipCacheService = membershipCacheService;
         this.redisTemplate = redisTemplate;
+        this.throttledCounter = Counter.builder("messages.throttled.total")
+                .description("Total STOMP canvas messages dropped due to rate limiting")
+                .register(meterRegistry);
     }
 
     /**
@@ -188,11 +205,22 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
             sendError(accessor.getSessionId(), accessor.getUser(), "Access denied to board " + boardId);
             return null;
         }
+        String sessionId = accessor.getSessionId();
         if (isRateLimited(principal.tenantId(), boardId, principal.userId())) {
+            throttledCounter.increment();
             LOG.warn("SEND rate-limited: user={} board={}", principal.userId(), boardId);
-            sendError(accessor.getSessionId(), accessor.getUser(), "Rate limit exceeded");
+            long strikes = incrementStrikes(sessionId, principal.tenantId(), boardId, principal.userId());
+            if (strikes >= MAX_STRIKES) {
+                resetStrikes(sessionId, principal.tenantId(), boardId, principal.userId());
+                sendError(accessor.getSessionId(), accessor.getUser(),
+                        "Session closed after repeated rate limit violations — please reconnect");
+            } else {
+                sendError(accessor.getSessionId(), accessor.getUser(),
+                        "Rate limit exceeded (" + strikes + "/" + MAX_STRIKES + " violations)");
+            }
             return null;
         }
+        resetStrikes(sessionId, principal.tenantId(), boardId, principal.userId());
         membershipCacheService.refreshHeartbeat(principal.tenantId(), boardId, principal.userId());
         return message;
     }
@@ -213,6 +241,47 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
             redisTemplate.expire(key, RATE_WINDOW);
         }
         return count != null && count > MAX_MESSAGES_PER_SECOND;
+    }
+
+    /**
+     * Increments the consecutive rate-limit violation strike counter for the session
+     * and returns the current strike count.
+     *
+     * <p>The strike key has a 60-second TTL so that clean periods reset the counter
+     * automatically. Three consecutive violations trigger effective session close (the
+     * client receives an error and is expected to disconnect — see US08.3.1).
+     *
+     * @param sessionId the STOMP session ID (used as part of the key)
+     * @param tenantId  the tenant UUID
+     * @param boardId   the board UUID
+     * @param userId    the user UUID
+     * @return the current strike count after incrementing
+     */
+    private long incrementStrikes(
+            final String sessionId, final UUID tenantId, final UUID boardId, final UUID userId) {
+        String key = STRIKES_KEY_PREFIX + sessionId + ":" + tenantId + ":" + boardId + ":" + userId;
+        Long count = redisTemplate.opsForValue().increment(key);
+        if (Long.valueOf(1L).equals(count)) {
+            redisTemplate.expire(key, STRIKES_TTL);
+        }
+        return count != null ? count : 1L;
+    }
+
+    /**
+     * Resets the strike counter for the session after a successful (non-rate-limited) message.
+     *
+     * @param sessionId the STOMP session ID
+     * @param tenantId  the tenant UUID
+     * @param boardId   the board UUID
+     * @param userId    the user UUID
+     */
+    private void resetStrikes(
+            final String sessionId, final UUID tenantId, final UUID boardId, final UUID userId) {
+        if (sessionId == null) {
+            return;
+        }
+        String key = STRIKES_KEY_PREFIX + sessionId + ":" + tenantId + ":" + boardId + ":" + userId;
+        redisTemplate.delete(key);
     }
 
     /**

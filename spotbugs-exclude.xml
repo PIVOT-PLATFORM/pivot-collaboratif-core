@@ -79,6 +79,11 @@
                  StringRedisTemplate, SimpMessagingTemplate); PresencePayload is a DTO record used
                  for STOMP broadcasting (mutable List is intentional — JSON-serialised by the broker). -->
             <Package name="fr.pivot.collaboratif.whiteboard.ws"/>
+            <!-- US08.3.1 — Canvas WS actions: CanvasActionService, ParticipantMetaStore, ColorPaletteService,
+                 WhiteboardActionController store constructor-injected singleton beans (repository, messaging
+                 template, ObjectMapper, MeterRegistry); DTO records expose mutable Map/List for JSON transport. -->
+            <Package name="fr.pivot.collaboratif.whiteboard.canvas"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.canvas.dto"/>
             <Package name="fr.pivot.collaboratif.context"/>
             <Package name="fr.pivot.collaboratif.config"/>
             <Package name="fr.pivot.collaboratif.exception"/>
