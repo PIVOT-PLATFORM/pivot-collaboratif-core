@@ -20,9 +20,9 @@ import java.util.UUID;
  * {@link ParticipantInfo}. This structure allows O(1) reads/writes per participant and
  * an efficient scan of all participants for PARTICIPANTS_UPDATE broadcasts.
  *
- * <p>The store is populated at JOIN and cleaned up at LEAVE. Entries are also eventually
- * removed by the presence registry on WebSocket disconnect (via
- * {@link fr.pivot.collaboratif.whiteboard.ws.WhiteboardPresenceRegistry#leaveAll}).
+ * <p>The store is populated at JOIN, cleaned up at explicit LEAVE, and also cleaned on
+ * WebSocket disconnect via
+ * {@link fr.pivot.collaboratif.whiteboard.ws.WhiteboardPresenceRegistry#leaveAll}.
  */
 @Component
 public class ParticipantMetaStore {

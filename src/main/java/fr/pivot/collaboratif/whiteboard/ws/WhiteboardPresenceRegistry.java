@@ -1,5 +1,6 @@
 package fr.pivot.collaboratif.whiteboard.ws;
 
+import fr.pivot.collaboratif.whiteboard.canvas.ParticipantMetaStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
@@ -43,20 +44,24 @@ public class WhiteboardPresenceRegistry {
 
     private final StringRedisTemplate redisTemplate;
     private final SimpMessagingTemplate messagingTemplate;
+    private final ParticipantMetaStore participantMetaStore;
 
     /**
      * Creates the registry with the required infrastructure beans.
      *
-     * @param redisTemplate     Redis client for presence storage
-     * @param messagingTemplate STOMP messaging template for broadcasting presence updates;
-     *                          injected lazily to avoid circular dependencies with the
-     *                          message broker configuration
+     * @param redisTemplate        Redis client for presence storage
+     * @param messagingTemplate    STOMP messaging template for broadcasting presence updates;
+     *                             injected lazily to avoid circular dependencies with the
+     *                             message broker configuration
+     * @param participantMetaStore store for canvas participant metadata, cleaned on disconnect
      */
     public WhiteboardPresenceRegistry(
             final StringRedisTemplate redisTemplate,
-            @Lazy final SimpMessagingTemplate messagingTemplate) {
+            @Lazy final SimpMessagingTemplate messagingTemplate,
+            final ParticipantMetaStore participantMetaStore) {
         this.redisTemplate = redisTemplate;
         this.messagingTemplate = messagingTemplate;
+        this.participantMetaStore = participantMetaStore;
     }
 
     /**
@@ -150,6 +155,7 @@ public class WhiteboardPresenceRegistry {
             UUID userId = UUID.fromString(parts[2]);
             String boardKey = boardPresenceKey(tenantId, boardId);
             redisTemplate.opsForHash().delete(boardKey, userId.toString());
+            participantMetaStore.remove(tenantId, boardId, userId);
             LOG.info("WebSocket LEAVE (disconnect) board={} user={} tenant={}", boardId, userId, tenantId);
             broadcastPresence(tenantId, boardId);
         } catch (IllegalArgumentException e) {

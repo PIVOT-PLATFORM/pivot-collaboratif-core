@@ -37,7 +37,7 @@ public class ColorPaletteService {
      * @return a hex colour string from the palette (e.g. {@code "#E91E63"})
      */
     public String colorForUser(final UUID userId) {
-        int index = Math.abs(userId.hashCode()) % PALETTE.size();
+        int index = Math.floorMod(userId.hashCode(), PALETTE.size());
         return PALETTE.get(index);
     }
 }
