@@ -8,6 +8,36 @@ permissions: read-all
 
 jobs:
   # -----------------------------------------
+  # 0. CHECK RELEASE TRIGGER — le trailer doit apparaître comme une LIGNE ENTIÈRE et EXACTE
+  #    du message de commit (`grep -qxE`, pas une sous-chaîne `contains()`). Sans cette
+  #    exactitude, toute prose qui *mentionne* le trailer (doc, PR décrivant la fonctionnalité,
+  #    ce fichier lui-même) le fait matcher par accident — vécu en pratique le 2026-07-06 :
+  #    le commit introduisant cette règle citait `Release-Trigger: true` dans sa description et
+  #    a lui-même déclenché `prepare` (sauvé par hasard : commit `docs:`, aucune version
+  #    calculée par semantic-release pour ce type). Le trailer réel doit être posé seul sur sa
+  #    propre ligne, rien d'autre — voir pivot-collaboratif-core/CLAUDE.md, Workflow — Release.
+  # -----------------------------------------
+  check-release-trigger:
+    name: Check release trigger
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    outputs:
+      trigger: ${{ steps.check.outputs.trigger }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check for exact Release-Trigger trailer line
+        id: check
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if printf '%s\n' "$COMMIT_MSG" | grep -qxE 'Release-Trigger: true'; then
+            echo "trigger=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "trigger=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # -----------------------------------------
   # 1. PREPARE — calcule la version SANS créer la release (dry-run).
   #    Permissions minimales (contents: read). ISO pivot-ui.
   # -----------------------------------------
@@ -15,7 +45,8 @@ jobs:
     name: Compute release version
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.actor != 'dependabot[bot]'
+    needs: [check-release-trigger]
+    if: needs.check-release-trigger.outputs.trigger == 'true'
     outputs:
       version: ${{ steps.version.outputs.version }}
     permissions:
