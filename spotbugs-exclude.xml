@@ -56,6 +56,15 @@
                  CookieHelper, TenantRepository, UserRepository, RateLimiterService,
                  AuditService). -->
             <Package name="fr.pivot.tenant.api"/>
+            <!-- Module Collaboratif — Whiteboard (US08.1.x) :
+                 JPA entities (Board, BoardMember) require mutable getters/setters for Hibernate;
+                 service (BoardService) and controller (BoardController) store constructor-injected
+                 singleton beans (repositories, WhiteboardModuleCheck). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.board"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.board.dto"/>
+            <Package name="fr.pivot.collaboratif.context"/>
+            <Package name="fr.pivot.collaboratif.config"/>
+            <Package name="fr.pivot.collaboratif.exception"/>
         </Or>
     </Match>
 
