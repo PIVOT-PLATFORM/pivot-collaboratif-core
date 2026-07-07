@@ -70,3 +70,7 @@ logging:
 pivot:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200}
+  share:
+    # Base URL of the Angular frontend — used to compose invitation links.
+    # Override in production via PIVOT_SHARE_BASE_URL.
+    base-url: ${PIVOT_SHARE_BASE_URL:http://localhost:4200}
