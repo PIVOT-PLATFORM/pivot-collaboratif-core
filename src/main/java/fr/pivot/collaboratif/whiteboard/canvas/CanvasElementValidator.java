@@ -42,7 +42,7 @@ public class CanvasElementValidator {
     private static final Pattern HEX_COLOR = Pattern.compile("^#[0-9A-Fa-f]{6}$");
 
     private static final Pattern IMAGE_PATH =
-            Pattern.compile("^/[a-zA-Z0-9/_-]+\\.(png|jpg|jpeg|svg|webp)$");
+            Pattern.compile("^/(?!/)[a-zA-Z0-9/_-]+\\.(png|jpg|jpeg|svg|webp)$");
 
     private static final Set<String> SHAPE_FIELDS = Set.of(
             FIELD_X, FIELD_Y, FIELD_WIDTH, FIELD_HEIGHT, "shapeKind", FIELD_COLOR, "strokeWidth");

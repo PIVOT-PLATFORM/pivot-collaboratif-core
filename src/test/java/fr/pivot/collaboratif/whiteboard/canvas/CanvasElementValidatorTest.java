@@ -173,6 +173,21 @@ class CanvasElementValidatorTest {
     }
 
     /**
+     * Given an image payload with a protocol-relative URL ("//host/..."), when validate()
+     * is called, then it throws {@link InvalidCanvasElementException} — a leading double
+     * slash must not be accepted as an internal path, since browsers resolve it against an
+     * arbitrary external host just like an absolute URL.
+     */
+    @Test
+    void validate_imageWithProtocolRelativeUrl_throws() {
+        String payload = "{\"x\":0,\"y\":0,\"width\":32,\"height\":32,"
+                + "\"url\":\"//evil-host/x.png\"}";
+
+        assertThatThrownBy(() -> validator.validate(CanvasElementType.IMAGE, payload))
+                .isInstanceOf(InvalidCanvasElementException.class);
+    }
+
+    /**
      * Given an image payload whose altText is blank, when validate() is called,
      * then it throws {@link InvalidCanvasElementException}.
      */
