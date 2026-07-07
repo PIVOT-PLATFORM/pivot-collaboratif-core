@@ -5,6 +5,8 @@ import fr.pivot.collaboratif.exception.BoardNotFoundException;
 import fr.pivot.collaboratif.exception.WhiteboardModuleDisabledException;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardPageResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardResponse;
+import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplate;
+import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplateService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -36,6 +38,7 @@ public class BoardService {
     private final BoardRepository boardRepository;
     private final BoardMemberRepository boardMemberRepository;
     private final WhiteboardModuleCheck moduleCheck;
+    private final WhiteboardTemplateService templateService;
 
     /**
      * Creates the service with all required dependencies.
@@ -43,14 +46,18 @@ public class BoardService {
      * @param boardRepository       repository for board persistence
      * @param boardMemberRepository repository for board membership persistence
      * @param moduleCheck           check for whiteboard module activation
+     * @param templateService       service resolving templates and initializing a board's
+     *                              canvas from one (US08.4.1)
      */
     public BoardService(
             final BoardRepository boardRepository,
             final BoardMemberRepository boardMemberRepository,
-            final WhiteboardModuleCheck moduleCheck) {
+            final WhiteboardModuleCheck moduleCheck,
+            final WhiteboardTemplateService templateService) {
         this.boardRepository = boardRepository;
         this.boardMemberRepository = boardMemberRepository;
         this.moduleCheck = moduleCheck;
+        this.templateService = templateService;
     }
 
     /**
@@ -67,13 +74,52 @@ public class BoardService {
      */
     @Transactional
     public BoardResponse create(final String title, final UUID userId, final UUID tenantId) {
+        return create(title, userId, tenantId, null);
+    }
+
+    /**
+     * Creates a new board and assigns the caller as OWNER, optionally initializing its
+     * canvas from a template (US08.4.1).
+     *
+     * <p>Persists the board and the initial {@link BoardMember} record, then — if a
+     * {@code templateId} is given — replays the template's elements as {@code DRAW}
+     * canvas events on the new board, all within a single transaction: an invalid or
+     * unknown {@code templateId} rolls back the board creation itself, leaving no orphan
+     * board behind. The board's visibility defaults to {@link BoardVisibility#PRIVATE}.
+     *
+     * @param title      board title (1–100 chars, validated at the controller layer)
+     * @param userId     calling user's UUID
+     * @param tenantId   calling tenant's UUID
+     * @param templateId raw {@code templateId} request parameter, or {@code null}/blank for
+     *                   a blank board (US08.1.1 behaviour, unchanged)
+     * @return the created board as a response record
+     * @throws WhiteboardModuleDisabledException                        if the whiteboard
+     *                                                                   module is inactive
+     *                                                                   for the tenant
+     * @throws fr.pivot.collaboratif.exception.InvalidTemplateIdException if {@code templateId}
+     *                                                                    is not a valid UUID
+     * @throws fr.pivot.collaboratif.exception.TemplateNotFoundException  if {@code templateId}
+     *                                                                    does not resolve to
+     *                                                                    an existing global
+     *                                                                    template
+     */
+    @Transactional
+    public BoardResponse create(
+            final String title, final UUID userId, final UUID tenantId, final String templateId) {
         if (!moduleCheck.isEnabled(tenantId)) {
             throw new WhiteboardModuleDisabledException(tenantId);
+        }
+        WhiteboardTemplate template = null;
+        if (templateId != null && !templateId.isBlank()) {
+            template = templateService.resolveGlobalTemplate(templateId);
         }
         Instant now = Instant.now();
         Board board = boardRepository.save(new Board(title, tenantId, userId, now));
         BoardMemberId memberId = new BoardMemberId(board.getId(), userId);
         boardMemberRepository.save(new BoardMember(memberId, BoardRole.OWNER, now));
+        if (template != null) {
+            templateService.initializeBoard(template, board.getId(), tenantId, userId);
+        }
         return BoardResponse.from(board, BoardRole.OWNER);
     }
 
