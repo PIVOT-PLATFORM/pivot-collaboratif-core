@@ -43,3 +43,15 @@ CREATE TABLE IF NOT EXISTS collaboratif.board_share_token (
 );
 CREATE INDEX IF NOT EXISTS idx_share_token_board_id ON collaboratif.board_share_token(board_id);
 CREATE INDEX IF NOT EXISTS idx_share_token_hash     ON collaboratif.board_share_token(token_hash);
+
+-- US08.3.1: canvas_event (DRAW persistence — Last-Write-Wins, event-sourcing approach)
+CREATE TABLE IF NOT EXISTS collaboratif.canvas_event (
+    id          UUID         NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    board_id    UUID         NOT NULL REFERENCES collaboratif.board(id) ON DELETE CASCADE,
+    tenant_id   UUID         NOT NULL,
+    user_id     UUID         NOT NULL,
+    event_type  VARCHAR(20)  NOT NULL,
+    payload     JSONB,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_canvas_event_board ON collaboratif.canvas_event(board_id, created_at ASC);

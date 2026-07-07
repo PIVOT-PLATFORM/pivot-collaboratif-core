@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
@@ -58,14 +59,29 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     }
 
     /**
-     * Configures the in-process simple message broker for topic subscriptions and sets the
-     * application destination prefix for client-to-server messages.
+     * Configures the in-process simple message broker for topic subscriptions, heartbeat,
+     * and the application destination prefix for client-to-server messages.
+     *
+     * <p>Heartbeat (US08.3.1): server sends every 25 s, server expects client heartbeat
+     * within 30 s. A client absent for 30 s is considered disconnected; the Angular client
+     * is responsible for reconnection (US08.3.2b exponential back-off).
+     *
+     * <p>The {@link ThreadPoolTaskScheduler} is required by the {@code SimpleBroker} to
+     * drive the heartbeat task; it is created inline to avoid a named-bean clash with
+     * other schedulers in the context.
      *
      * @param config the message broker registry to configure
      */
     @Override
     public void configureMessageBroker(final MessageBrokerRegistry config) {
-        config.enableSimpleBroker("/topic");
+        ThreadPoolTaskScheduler heartbeatScheduler = new ThreadPoolTaskScheduler();
+        heartbeatScheduler.setPoolSize(1);
+        heartbeatScheduler.setThreadNamePrefix("ws-heartbeat-");
+        heartbeatScheduler.initialize();
+
+        config.enableSimpleBroker("/topic", "/queue")
+                .setHeartbeatValue(new long[]{25000L, 30000L})
+                .setTaskScheduler(heartbeatScheduler);
         config.setApplicationDestinationPrefixes("/app");
     }
 
