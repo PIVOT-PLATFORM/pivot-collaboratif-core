@@ -194,7 +194,7 @@ Toute contribution mobilise les experts concernés — les mentionner explicitem
 Avant tout code, le **PO Agent** challenge les ACs de l'US :
 
 1. Vérifier DoR — story complète, ACs Given/When/Then, AC erreur + sécurité
-2. Calculer Gate 1 : **≥ 70** → procéder · **< 70** → PO Agent réécrit ACs → recalculer
+2. Calculer Gate 1 : **= 100** → procéder · **< 100** → PO Agent réécrit ACs → recalculer
 3. AC ambigus à l'implémentation → PO Agent clarifie, jamais d'interprétation unilatérale
 4. **AC supposant `pivot-core-starter` disponible alors qu'il ne l'est pas** → bloquant, signaler
    au mainteneur avant tout Gate 1 (voir section dédiée ci-dessus)
@@ -221,6 +221,51 @@ Travail organisé par sprint. Référence : **`pivot-docs/docs/backlog/sprints/`
 - **Une branche par US / Enabler** — `feat/{us-id}-{slug}` (ex. `feat/us08-1-1-creer-tableau`)
 - **Agents en parallèle** — un agent par item du sprint, branches séparées
 - **Backlog pivot-docs** — mises à jour `Stage` dans le frontmatter US + `sprints/sprint-{N}.md`, committés sur la branche de l'US
+- **Issue GitHub liée** — avant de démarrer un item, vérifier qu'une issue existe dans **ce repo** pour cet US/Enabler (recherche par id/titre). Absente → la créer (titre `{id} — {titre US}`, corps = lien vers le fichier backlog pivot-docs + AC). **Déjà assignée** (humain ou agent en cours) → item déjà pris, ne pas démarrer, passer au suivant. Sinon → se l'auto-assigner immédiatement (`gh issue edit {N} --add-assignee @me`) avant le premier commit — verrouille l'item, empêche qu'un autre agent ou une autre personne ne le reprenne en parallèle. Référencer l'issue dans la PR (`Closes #N`) — fermeture automatique à la fusion, jamais de fermeture manuelle en double.
+
+## Workflow — Merge séquentiel autonome (plusieurs PR)
+
+Quand plusieurs PR sont ouvertes/en attente sur ce repo (ex. plusieurs items d'un même sprint),
+Claude détermine seul l'ordre de fusion et l'exécute de bout en bout, sans confirmation par PR :
+
+1. **Ordre** — dépendances fonctionnelles entre items d'abord, puis fichiers partagés
+   (migrations Flyway, config Spring commune) pour minimiser les rebases en cascade.
+2. **Par PR, dans cet ordre :**
+   - Rebase sur `main` à jour (jamais de merge commit)
+   - Conflit → résolution manuelle réelle (jamais `--theirs`/`--ours` aveugle) : lire les deux
+     côtés, comprendre l'intention de chacun, fusionner le contenu
+   - Rebase sans conflit mais fichier partagé → vérifier quand même qu'aucune régression
+     sémantique silencieuse ne s'est introduite (ex. une clé de config écrasée par l'auto-merge git)
+   - `mvn verify -q` local avant push (ou vérification équivalente si Docker indisponible en
+     sandbox — s'appuyer sur la CI réelle pour la partie Testcontainers)
+   - Push, attendre la CI réelle en boucle synchrone (jamais d'attente passive d'une notification)
+   - Gate 4 selon les seuils déjà définis ci-dessous → squash-merge dès convergence
+3. **Dernier item du sprint courant** (vérifier `pivot-docs/docs/backlog/sprints/sprint-{N}.md`)
+   → le commit de squash-merge porte le marqueur de release (voir *Workflow — Release*
+   ci-dessous), tous les autres non.
+4. Incident CI rencontré en cours de route → diagnostiquer et corriger avant de continuer la
+   séquence, pas de contournement silencieux.
+
+## Workflow — Release
+
+Le déclenchement d'une release (`release.yml` : version, publish Maven/Docker, tag, changelog)
+n'a lieu **qu'en fin de sprint**, jamais à chaque merge — un merge ordinaire ne doit ni bumper de
+version ni publier quoi que ce soit.
+
+- **Déclencheur** : le commit du squash-merge du **dernier item d'un sprint** porte le trailer
+  `Release-Trigger: true` **sur sa propre ligne, seul, rien d'autre** (`grep -qxE` — match exact
+  de ligne entière, jamais une simple sous-chaîne — cf. incident réel documenté sur
+  `pivot-core/CLAUDE.md` et `pivot-ui/CLAUDE.md`, section Workflow — Release).
+- **Pourquoi** : sans cette règle, chaque merge déclenche `release.yml` — plusieurs merges
+  rapprochés calculeraient tous la même "prochaine version" (aucun tag encore créé entre eux) et
+  le second à publier échouerait en conflit sur GitHub Packages.
+- **Effet** : la release qui finit par se déclencher regroupe automatiquement, dans une seule
+  entrée de changelog, tous les commits accumulés depuis le dernier tag — comportement natif de
+  semantic-release, pas une fonctionnalité à coder.
+- **Ajout du trailer** : `gh pr merge --squash --body "...
+
+Release-Trigger: true"` — trailer sur sa propre ligne finale, précédée d'une ligne vide, jamais
+  intégré dans une phrase. Uniquement sur le merge identifié comme dernier item du sprint courant.
 
 ## Workflow — Autoloop PR
 
@@ -339,7 +384,7 @@ dans le champ **Stage** du frontmatter US (pivot-docs).
 
 | Gate | Moment | Seuils |
 |------|--------|--------|
-| **1 — READINESS** | Avant implémentation | PO Agent self-challenge · ≥ 70 → Stage: Ready → procéder · < 70 → PO Agent réécrit ACs |
+| **1 — READINESS** | Avant implémentation | PO Agent self-challenge · = 100 → Stage: Ready → procéder · < 100 → PO Agent réécrit ACs |
 | **2 — COVERAGE** | Par commit | ≥ 85 → continuer · 70–84 → compléter tests · < 70 → stop |
 | **3 — QUALITY** | Après CI verte | Hard blocks : secret Gitleaks, label `security`/`breaking-change`, modif contrat module/dépendance pivot-core |
 | **4 — MERGE CONFIDENCE** | Avant merge | ≥ 85 → merge autonome · 60–84 → merge documenté · < 60 → Breaking Point 2 |
