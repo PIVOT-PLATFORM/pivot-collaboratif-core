@@ -4,3 +4,26 @@
 -- commencera par plier ses propres changements de schema dans ce meme fichier jusqu'au feu
 -- vert BETA du mainteneur.
 CREATE SCHEMA IF NOT EXISTS collaboratif;
+
+-- US08.1.1: board + board_member
+CREATE TABLE IF NOT EXISTS collaboratif.board (
+    id          UUID         NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    title       VARCHAR(100) NOT NULL,
+    tenant_id   UUID         NOT NULL,
+    owner_id    UUID         NOT NULL,
+    visibility  VARCHAR(20)  NOT NULL DEFAULT 'PRIVATE',
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_board_tenant_id   ON collaboratif.board(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_board_owner_id    ON collaboratif.board(owner_id);
+CREATE INDEX IF NOT EXISTS idx_board_updated_at  ON collaboratif.board(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS collaboratif.board_member (
+    board_id  UUID        NOT NULL REFERENCES collaboratif.board(id) ON DELETE CASCADE,
+    user_id   UUID        NOT NULL,
+    role      VARCHAR(20) NOT NULL,
+    joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (board_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_board_member_user_id ON collaboratif.board_member(user_id);
