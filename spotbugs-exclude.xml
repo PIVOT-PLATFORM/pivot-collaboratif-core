@@ -62,6 +62,14 @@
                  singleton beans (repositories, WhiteboardModuleCheck). -->
             <Package name="fr.pivot.collaboratif.whiteboard.board"/>
             <Package name="fr.pivot.collaboratif.whiteboard.board.dto"/>
+            <!-- US08.2.1 — BoardShareService/BoardShareController store constructor-injected
+                 singleton beans (repositories, StringRedisTemplate, @Value String). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.share"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.share.dto"/>
+            <!-- US08.2.2 — BoardJoinService/BoardJoinController/JoinRateLimitService store
+                 constructor-injected singleton beans (repositories, StringRedisTemplate). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.join"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.join.dto"/>
             <Package name="fr.pivot.collaboratif.context"/>
             <Package name="fr.pivot.collaboratif.config"/>
             <Package name="fr.pivot.collaboratif.exception"/>
