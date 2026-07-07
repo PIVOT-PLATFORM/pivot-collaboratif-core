@@ -52,17 +52,25 @@ public class BoardController {
     /**
      * Creates a new board. The caller is automatically assigned as OWNER.
      *
-     * @param request   the board creation request — must contain a non-blank title of at most
-     *                  100 characters
-     * @param principal the resolved caller identity (user + tenant)
+     * <p>When {@code templateId} is given, the board's canvas is initialized from that
+     * whiteboard template's elements (US08.4.1) — see {@code WhiteboardTemplateService}.
+     * Omitting it creates a blank board (US08.1.1 behaviour, unchanged).
+     *
+     * @param request    the board creation request — must contain a non-blank title of at most
+     *                   100 characters
+     * @param templateId optional raw {@code templateId} query parameter identifying a global
+     *                   template to initialize the board's canvas from
+     * @param principal  the resolved caller identity (user + tenant)
      * @return the created board with HTTP 201 Created
      */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public BoardResponse create(
             @RequestBody @Valid final CreateBoardRequest request,
+            @RequestParam(name = "templateId", required = false) final String templateId,
             final RequestPrincipal principal) {
-        return boardService.create(request.title(), principal.userId(), principal.tenantId());
+        return boardService.create(
+                request.title(), principal.userId(), principal.tenantId(), templateId);
     }
 
     /**

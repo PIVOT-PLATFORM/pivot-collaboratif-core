@@ -1,5 +1,8 @@
 package fr.pivot.collaboratif.whiteboard.board;
 
+import fr.pivot.collaboratif.whiteboard.canvas.CanvasEvent;
+import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
+import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +22,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -74,7 +78,18 @@ class BoardControllerIT {
     @Autowired
     private WebApplicationContext wac;
 
+    @Autowired
+    private CanvasEventRepository canvasEventRepository;
+
     private MockMvc mockMvc;
+
+    /** UUID of the "Brainstorm" template, fixed in the Flyway seed data (US08.4.1). */
+    private static final UUID BRAINSTORM_TEMPLATE_ID =
+            UUID.fromString("11111111-1111-1111-1111-111111111111");
+
+    /** UUID of the "Retrospective" template, fixed in the Flyway seed data (US08.4.1). */
+    private static final UUID RETROSPECTIVE_TEMPLATE_ID =
+            UUID.fromString("22222222-2222-2222-2222-222222222222");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -139,6 +154,117 @@ class BoardControllerIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"title\": \"Board\"}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /whiteboard/boards?templateId=... (US08.4.1)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Given a valid templateId resolving to the "Brainstorm" global template,
+     * when POST /whiteboard/boards?templateId=... is called,
+     * then it returns HTTP 201 and the new board's canvas contains one persisted DRAW
+     * event per template element (5 for Brainstorm), each a valid JSON payload.
+     */
+    @Test
+    void createBoard_withValidTemplateId_returns201AndInitializesCanvasFromTemplate() throws Exception {
+        MvcResult result = mockMvc.perform(post(BASE_PATH)
+                        .queryParam("templateId", BRAINSTORM_TEMPLATE_ID.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Pivot-User-Id", USER_A)
+                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .content("{\"title\": \"From Brainstorm\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.title").value("From Brainstorm"))
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        UUID boardId = UUID.fromString(body.get("id").asText());
+
+        List<CanvasEvent> events = canvasEventRepository
+                .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(boardId, TENANT_A);
+
+        assertThat(events).hasSize(5);
+        assertThat(events).allSatisfy(event -> {
+            assertThat(event.getEventType()).isEqualTo(CanvasEventType.DRAW);
+            assertThat(event.getUserId()).isEqualTo(USER_A);
+            assertThat(event.getTenantId()).isEqualTo(TENANT_A);
+            assertThat(event.getPayload()).isNotBlank();
+        });
+    }
+
+    /**
+     * Given a valid templateId resolving to the "Retrospective" global template,
+     * when POST /whiteboard/boards?templateId=... is called,
+     * then the new board's canvas contains one persisted DRAW event per template element
+     * (7 for Retrospective).
+     */
+    @Test
+    void createBoard_withRetrospectiveTemplateId_initializesSevenElements() throws Exception {
+        MvcResult result = mockMvc.perform(post(BASE_PATH)
+                        .queryParam("templateId", RETROSPECTIVE_TEMPLATE_ID.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Pivot-User-Id", USER_A)
+                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .content("{\"title\": \"From Retro\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        UUID boardId = UUID.fromString(body.get("id").asText());
+
+        List<CanvasEvent> events = canvasEventRepository
+                .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(boardId, TENANT_A);
+
+        assertThat(events).hasSize(7);
+    }
+
+    /**
+     * Given no templateId query parameter, when POST /whiteboard/boards is called,
+     * then the board is created blank with no canvas events (US08.1.1 behaviour
+     * unchanged).
+     */
+    @Test
+    void createBoard_withoutTemplateId_hasNoCanvasEvents() throws Exception {
+        String boardId = createBoardFor(USER_A, TENANT_A, "Blank Board");
+
+        List<CanvasEvent> events = canvasEventRepository.findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(
+                UUID.fromString(boardId), TENANT_A);
+
+        assertThat(events).isEmpty();
+    }
+
+    /**
+     * Error case: given a templateId that is not a syntactically valid UUID,
+     * when POST /whiteboard/boards?templateId=... is called,
+     * then it returns HTTP 400 with code "INVALID_TEMPLATE_ID".
+     */
+    @Test
+    void createBoard_withMalformedTemplateId_returns400WithInvalidTemplateIdCode() throws Exception {
+        mockMvc.perform(post(BASE_PATH)
+                        .queryParam("templateId", "not-a-uuid")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Pivot-User-Id", USER_A)
+                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .content("{\"title\": \"Board\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_TEMPLATE_ID"));
+    }
+
+    /**
+     * Error case: given a templateId with a well-formed UUID that does not match any
+     * template, when POST /whiteboard/boards?templateId=... is called,
+     * then it returns HTTP 404 (no existence leak) and no board is persisted.
+     */
+    @Test
+    void createBoard_withNonExistentTemplateId_returns404() throws Exception {
+        UUID unknownTemplateId = UUID.randomUUID();
+
+        mockMvc.perform(post(BASE_PATH)
+                        .queryParam("templateId", unknownTemplateId.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Pivot-User-Id", USER_A)
+                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .content("{\"title\": \"Board\"}"))
+                .andExpect(status().isNotFound());
     }
 
     // -------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 package fr.pivot.collaboratif.exception;
 
 import jakarta.validation.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -16,11 +18,15 @@ import java.util.Map;
  * {@link BoardAccessDeniedException}, {@link WhiteboardModuleDisabledException},
  * {@link BoardShareTokenNotFoundException}, {@link BoardShareTokenExpiredException},
  * {@link BoardAlreadyMemberException}, {@link BoardMemberNotFoundException},
- * {@link TooManyRequestsException}) as well as
+ * {@link TooManyRequestsException}), template domain exceptions
+ * ({@link TemplateNotFoundException}, {@link InvalidTemplateIdException},
+ * {@link InvalidCanvasElementException}), as well as
  * Spring MVC validation failures ({@link MethodArgumentNotValidException}).
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     /**
      * Returns HTTP 404 when a board is not found, belongs to another tenant,
@@ -133,6 +139,57 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.TOO_MANY_REQUESTS);
         problem.setTitle("Too many requests");
         problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 404 when a {@code templateId} does not resolve to an existing global
+     * whiteboard template.
+     *
+     * @param ex the thrown exception
+     * @return a 404 problem detail
+     */
+    @ExceptionHandler(TemplateNotFoundException.class)
+    public ProblemDetail handleTemplateNotFound(final TemplateNotFoundException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Template not found");
+        problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 400 with a machine-readable {@code code} property when the
+     * {@code templateId} query parameter is not a syntactically valid UUID.
+     *
+     * @param ex the thrown exception
+     * @return a 400 problem detail with {@code { "code": "INVALID_TEMPLATE_ID" } }
+     */
+    @ExceptionHandler(InvalidTemplateIdException.class)
+    public ProblemDetail handleInvalidTemplateId(final InvalidTemplateIdException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid template id");
+        problem.setProperties(Map.of("code", "INVALID_TEMPLATE_ID"));
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 500 when whiteboard template seed content fails the strict
+     * shape/text/image JSON schema whitelist at board-initialization time.
+     *
+     * <p>This is always an internal invariant violation (seed data drift), never a
+     * caller input error — the underlying diagnostic detail is logged server-side only
+     * and not echoed back in the response body.
+     *
+     * @param ex the thrown exception
+     * @return a generic 500 problem detail
+     */
+    @ExceptionHandler(InvalidCanvasElementException.class)
+    public ProblemDetail handleInvalidCanvasElement(final InvalidCanvasElementException ex) {
+        LOG.error("Invalid canvas element content (seed/template data schema drift): {}",
+                ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
+        problem.setTitle("Internal error");
+        problem.setDetail("Unable to initialize board content");
         return problem;
     }
 

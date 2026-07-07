@@ -84,6 +84,13 @@
                  template, ObjectMapper, MeterRegistry); DTO records expose mutable Map/List for JSON transport. -->
             <Package name="fr.pivot.collaboratif.whiteboard.canvas"/>
             <Package name="fr.pivot.collaboratif.whiteboard.canvas.dto"/>
+            <!-- US08.4.1 — Board-from-template: WhiteboardTemplateService/WhiteboardTemplateController
+                 store constructor-injected singleton beans (repositories, CanvasElementValidator,
+                 WhiteboardModuleCheck); WhiteboardTemplate/WhiteboardTemplateElement are JPA
+                 entities (mutable state required by Hibernate, even though read-only from the
+                 application's point of view — rows are Flyway-seeded only). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.template"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.template.dto"/>
             <Package name="fr.pivot.collaboratif.context"/>
             <Package name="fr.pivot.collaboratif.config"/>
             <Package name="fr.pivot.collaboratif.exception"/>

@@ -2,9 +2,12 @@ package fr.pivot.collaboratif.whiteboard.board;
 
 import fr.pivot.collaboratif.exception.BoardAccessDeniedException;
 import fr.pivot.collaboratif.exception.BoardNotFoundException;
+import fr.pivot.collaboratif.exception.TemplateNotFoundException;
 import fr.pivot.collaboratif.exception.WhiteboardModuleDisabledException;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardPageResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardResponse;
+import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplate;
+import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplateService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,7 +24,10 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -43,6 +49,9 @@ class BoardServiceTest {
     @Mock
     private WhiteboardModuleCheck moduleCheck;
 
+    @Mock
+    private WhiteboardTemplateService templateService;
+
     private BoardService boardService;
 
     private static final UUID USER_A = UUID.randomUUID();
@@ -51,7 +60,8 @@ class BoardServiceTest {
     /** Initialises the service under test with mocked dependencies. */
     @BeforeEach
     void setUp() {
-        boardService = new BoardService(boardRepository, boardMemberRepository, moduleCheck);
+        boardService = new BoardService(
+                boardRepository, boardMemberRepository, moduleCheck, templateService);
     }
 
     // -------------------------------------------------------------------------
@@ -87,6 +97,87 @@ class BoardServiceTest {
 
         assertThatThrownBy(() -> boardService.create("Title", USER_A, TENANT_A))
                 .isInstanceOf(WhiteboardModuleDisabledException.class);
+    }
+
+    /**
+     * Given no templateId, when the 3-arg create() overload delegates to the 4-arg one,
+     * then {@link WhiteboardTemplateService} is never consulted (US08.1.1 behaviour
+     * unchanged).
+     */
+    @Test
+    void create_withoutTemplateId_neverResolvesTemplate() {
+        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
+        Board savedBoard = boardWithOwner(UUID.randomUUID(), "My Board", USER_A, TENANT_A);
+        when(boardRepository.save(any(Board.class))).thenReturn(savedBoard);
+        when(boardMemberRepository.save(any(BoardMember.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        boardService.create("My Board", USER_A, TENANT_A);
+
+        verify(templateService, never())
+                .resolveGlobalTemplate(anyString());
+        verify(templateService, never())
+                .initializeBoard(any(), any(), any(), any());
+    }
+
+    /**
+     * Given a valid templateId resolving to an existing global template, when create() is
+     * called with it, then the board is created and the template service initializes its
+     * canvas from that template.
+     */
+    @Test
+    void create_withValidTemplateId_initializesBoardFromTemplate() {
+        UUID templateUuid = UUID.randomUUID();
+        WhiteboardTemplate template = mock(WhiteboardTemplate.class);
+        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
+        when(templateService.resolveGlobalTemplate(templateUuid.toString())).thenReturn(template);
+        Board savedBoard = boardWithOwner(UUID.randomUUID(), "My Board", USER_A, TENANT_A);
+        when(boardRepository.save(any(Board.class))).thenReturn(savedBoard);
+        when(boardMemberRepository.save(any(BoardMember.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        BoardResponse response =
+                boardService.create("My Board", USER_A, TENANT_A, templateUuid.toString());
+
+        assertThat(response.title()).isEqualTo("My Board");
+        verify(templateService)
+                .initializeBoard(template, savedBoard.getId(), TENANT_A, USER_A);
+    }
+
+    /**
+     * Given a templateId that does not resolve to an existing global template, when
+     * create() is called, then the exception from {@link WhiteboardTemplateService}
+     * propagates and no board is persisted.
+     */
+    @Test
+    void create_withUnknownTemplateId_propagatesTemplateNotFoundAndDoesNotPersistBoard() {
+        UUID templateUuid = UUID.randomUUID();
+        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
+        when(templateService.resolveGlobalTemplate(templateUuid.toString()))
+                .thenThrow(new TemplateNotFoundException(templateUuid));
+
+        assertThatThrownBy(() ->
+                boardService.create("My Board", USER_A, TENANT_A, templateUuid.toString()))
+                .isInstanceOf(TemplateNotFoundException.class);
+
+        verify(boardRepository, never()).save(any(Board.class));
+    }
+
+    /**
+     * Given the module is disabled for the tenant, when create() is called with a
+     * templateId, then it throws {@link WhiteboardModuleDisabledException} before the
+     * template is even resolved.
+     */
+    @Test
+    void create_withTemplateIdAndModuleDisabled_throwsBeforeResolvingTemplate() {
+        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(false);
+
+        assertThatThrownBy(() ->
+                boardService.create("Title", USER_A, TENANT_A, UUID.randomUUID().toString()))
+                .isInstanceOf(WhiteboardModuleDisabledException.class);
+
+        verify(templateService, never())
+                .resolveGlobalTemplate(anyString());
     }
 
     // -------------------------------------------------------------------------
