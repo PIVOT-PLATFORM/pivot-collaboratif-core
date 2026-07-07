@@ -1,7 +1,6 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
-import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
 import fr.pivot.collaboratif.whiteboard.board.BoardRole;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
