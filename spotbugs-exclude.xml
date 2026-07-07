@@ -74,6 +74,11 @@
                  singleton beans (repositories). -->
             <Package name="fr.pivot.collaboratif.whiteboard.member"/>
             <Package name="fr.pivot.collaboratif.whiteboard.member.dto"/>
+            <!-- EN08.1 — WebSocket STOMP isolation: MembershipCacheService, WhiteboardChannelInterceptor,
+                 WhiteboardPresenceRegistry store constructor-injected singleton beans (repositories,
+                 StringRedisTemplate, SimpMessagingTemplate); PresencePayload is a DTO record used
+                 for STOMP broadcasting (mutable List is intentional — JSON-serialised by the broker). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.ws"/>
             <Package name="fr.pivot.collaboratif.context"/>
             <Package name="fr.pivot.collaboratif.config"/>
             <Package name="fr.pivot.collaboratif.exception"/>
