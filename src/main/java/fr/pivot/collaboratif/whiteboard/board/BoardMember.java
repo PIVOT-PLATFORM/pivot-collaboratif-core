@@ -81,6 +81,15 @@ public class BoardMember {
     }
 
     /**
+     * Updates the user's role on the board.
+     *
+     * @param role the new role to assign
+     */
+    public void setRole(final BoardRole role) {
+        this.role = role;
+    }
+
+    /**
      * Returns the timestamp when the user joined the board.
      *
      * @return the joinedAt instant

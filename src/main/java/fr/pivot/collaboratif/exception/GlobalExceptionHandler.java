@@ -15,7 +15,8 @@ import java.util.Map;
  * <p>Handles board-specific domain exceptions ({@link BoardNotFoundException},
  * {@link BoardAccessDeniedException}, {@link WhiteboardModuleDisabledException},
  * {@link BoardShareTokenNotFoundException}, {@link BoardShareTokenExpiredException},
- * {@link BoardAlreadyMemberException}, {@link TooManyRequestsException}) as well as
+ * {@link BoardAlreadyMemberException}, {@link BoardMemberNotFoundException},
+ * {@link TooManyRequestsException}) as well as
  * Spring MVC validation failures ({@link MethodArgumentNotValidException}).
  */
 @RestControllerAdvice
@@ -89,6 +90,20 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleShareTokenExpired(final BoardShareTokenExpiredException ex) {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.GONE);
         problem.setTitle("Share token expired");
+        problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 404 when a board membership record does not exist.
+     *
+     * @param ex the thrown exception
+     * @return a 404 problem detail
+     */
+    @ExceptionHandler(BoardMemberNotFoundException.class)
+    public ProblemDetail handleMemberNotFound(final BoardMemberNotFoundException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Member not found");
         problem.setDetail(ex.getMessage());
         return problem;
     }

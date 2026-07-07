@@ -70,6 +70,10 @@
                  constructor-injected singleton beans (repositories, StringRedisTemplate). -->
             <Package name="fr.pivot.collaboratif.whiteboard.join"/>
             <Package name="fr.pivot.collaboratif.whiteboard.join.dto"/>
+            <!-- US08.2.3 — BoardMemberService/BoardMemberController store constructor-injected
+                 singleton beans (repositories). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.member"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.member.dto"/>
             <Package name="fr.pivot.collaboratif.context"/>
             <Package name="fr.pivot.collaboratif.config"/>
             <Package name="fr.pivot.collaboratif.exception"/>
