@@ -80,6 +80,16 @@
 			<artifactId>spring-boot-starter-websocket</artifactId>
 		</dependency>
 		<!--
+		  EN07.3 — required for Spring's STOMP broker relay (enableStompBrokerRelay): the
+		  relay's "system" TCP connection to the external broker (ActiveMQ) is built on
+		  Reactor Netty, which spring-boot-starter-websocket alone does not pull in.
+		  No explicit <version> — managed by the spring-boot-starter-parent BOM.
+		-->
+		<dependency>
+			<groupId>io.projectreactor.netty</groupId>
+			<artifactId>reactor-netty</artifactId>
+		</dependency>
+		<!--
 		  Spring Boot 4 moved FlywayAutoConfiguration out of spring-boot-autoconfigure
 		  into the dedicated spring-boot-flyway module. flyway-core alone provides the
 		  library but NOT the autoconfig that runs migrations on startup — without this
