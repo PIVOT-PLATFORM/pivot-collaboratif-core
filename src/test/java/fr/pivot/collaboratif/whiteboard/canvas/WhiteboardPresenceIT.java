@@ -172,6 +172,13 @@ class WhiteboardPresenceIT {
         StompSession tab2 = connectAs(userId, tenantId);
         joinBoard(tab2, board.getId(), "Alice (tab 2)");
 
+        // Wait for tab2's own JOIN to be fully processed server-side (including registering
+        // its session in WhiteboardPresenceRegistry) before proceeding — tab1 is already
+        // subscribed to the presence topic, so it also receives tab2's JOIN broadcast. Without
+        // this synchronisation point, tab1's disconnect below could race ahead of tab2's session
+        // registration and flakily observe tab2 as not-yet-registered.
+        awaitAtLeast(tab1Updates, 2);
+
         // Independent observer to see whether a PARTICIPANTS_UPDATE fires after tab1 crashes.
         UUID observerId = UUID.randomUUID();
         boardMemberRepository.save(new BoardMember(
