@@ -74,3 +74,11 @@ pivot:
     # Base URL of the Angular frontend — used to compose invitation links.
     # Override in production via PIVOT_SHARE_BASE_URL.
     base-url: ${PIVOT_SHARE_BASE_URL:http://localhost:4200}
+  activemq:
+    # EN07.3 — shared ActiveMQ broker (KahaDB persistence, built in pivot-core), STOMP relay
+    # for the collaboratif-domain cross-module bus (/topic/collaboratif.*). Defaults match the
+    # Docker Compose service name/port defined in pivot-core (dev + prod). relay-enabled is
+    # overridden to false in application-test.yml — see WebSocketConfig's class JavaDoc.
+    relay-enabled: ${PIVOT_ACTIVEMQ_RELAY_ENABLED:true}
+    relay-host: ${PIVOT_ACTIVEMQ_RELAY_HOST:activemq}
+    relay-port: ${PIVOT_ACTIVEMQ_RELAY_PORT:61613}

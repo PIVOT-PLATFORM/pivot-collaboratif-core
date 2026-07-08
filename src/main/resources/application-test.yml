@@ -49,3 +49,18 @@ logging:
 pivot:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200}
+  activemq:
+    # EN07.3 — the relay is entirely disabled in the "test" profile. Empirically, merely
+    # registering a StompBrokerRelay whose target is unreachable — regardless of whether the
+    # target is a hostname or a closed numeric port — cascades into ConnectionLostException/
+    # "Connection closed" failures on the whiteboard's own SimpleBroker WebSocket sessions in
+    # WhiteboardWebSocketIT/WhiteboardCanvasIT/WhiteboardPresenceIT (verified: switching the
+    # target from "activemq" to "127.0.0.1" alone did not fix it — the two broker registrations
+    # are not as runtime-isolated as the MessageBrokerRegistry API suggests once one of them is
+    # actually failing to connect). Disabling registration entirely for every test that doesn't
+    # care about EN07.3 restores byte-for-byte pre-EN07.3 behavior. See WebSocketConfig's class
+    # JavaDoc. WebSocketConfigRelayIT (the one test that DOES care) overrides relay-enabled back
+    # to true via @DynamicPropertySource, against a real Testcontainers broker.
+    relay-enabled: false
+    relay-host: 127.0.0.1
+    relay-port: 61613
