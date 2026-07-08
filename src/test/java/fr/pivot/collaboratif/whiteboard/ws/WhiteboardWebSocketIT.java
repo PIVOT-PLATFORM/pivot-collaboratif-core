@@ -6,6 +6,7 @@ import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRole;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,7 @@ import java.lang.reflect.Type;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -46,15 +48,22 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * <p>Verifies that:
  * <ol>
  *   <li>A WebSocket connection without identity headers is rejected (HTTP 401).</li>
- *   <li>A board member can subscribe to the board's STOMP topic and receives a JOIN
- *       presence broadcast.</li>
- *   <li>A non-member's SUBSCRIBE frame is silently dropped; the user does not appear
- *       in the board's presence list.</li>
+ *   <li>A board member can subscribe to the board's STOMP topic and receives broadcasts
+ *       sent to it.</li>
+ *   <li>A non-member's SUBSCRIBE frame is silently dropped; they never receive a board
+ *       broadcast.</li>
  *   <li>A user from a different tenant is blocked from subscribing to a board belonging
  *       to another tenant even when the boardId is known (cross-tenant isolation).</li>
  *   <li>A denied SUBSCRIBE does not close the WebSocket session; other subscriptions on
  *       the same session remain active.</li>
  * </ol>
+ *
+ * <p>Presence-specific scenarios (PARTICIPANTS_UPDATE on JOIN/LEAVE, multi-tab and
+ * crash-without-LEAVE cleanup) are covered by {@link WhiteboardCanvasIT} (US08.3.1) and
+ * {@code WhiteboardPresenceIT} (US08.5.1) — this class deliberately does not assert on
+ * presence payloads so that room-isolation and presence-liveness concerns stay decoupled,
+ * consistent with the collision fix in pivot-collaboratif-core#32 (a bare STOMP SUBSCRIBE no
+ * longer represents "presence"; only an explicit JOIN application message does).
  *
  * <p>Uses {@link StandardWebSocketClient} (raw WebSocket, no SockJS) to connect to the
  * endpoint registered by {@link fr.pivot.collaboratif.config.WebSocketConfig}. Board and
@@ -96,9 +105,6 @@ class WhiteboardWebSocketIT {
     @Autowired
     private BoardMemberRepository boardMemberRepository;
 
-    @Autowired
-    private WhiteboardPresenceRegistry presenceRegistry;
-
     /** Keeps track of open sessions so they can be disconnected in teardown. */
     private final List<StompSession> openSessions = new ArrayList<>();
 
@@ -136,32 +142,33 @@ class WhiteboardWebSocketIT {
     }
 
     // -------------------------------------------------------------------------
-    // Test 2 — Member can subscribe and receives presence broadcast
+    // Test 2 — Member can subscribe and receives board broadcasts
     // -------------------------------------------------------------------------
 
     /**
      * Given a board with user A as OWNER,
-     * when user A subscribes to {@code /topic/whiteboard/{boardId}},
-     * then user A appears in the presence list broadcast on
-     * {@code /topic/whiteboard/{boardId}/presence}.
+     * when user A subscribes to {@code /topic/whiteboard/{boardId}} and sends a DRAW action,
+     * then user A receives their own broadcast back (subscription is authorised and active).
      */
     @Test
-    void board_member_receives_presence_on_subscribe() throws Exception {
+    void board_member_can_subscribe_and_receives_broadcast() throws Exception {
         UUID tenantId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         Board board = createBoardWithOwner(tenantId, userId);
 
         StompSession session = connectAs(userId, tenantId);
-
-        CompletableFuture<PresencePayload> presenceFuture = new CompletableFuture<>();
-        session.subscribe("/topic/whiteboard/" + board.getId() + "/presence",
-                presenceHandler(PresencePayload.class, presenceFuture));
-
+        CompletableFuture<BroadcastCanvasMessage> drawFuture = new CompletableFuture<>();
         session.subscribe("/topic/whiteboard/" + board.getId(),
-                new NoopFrameHandler());
+                framHandler(BroadcastCanvasMessage.class, drawFuture));
 
-        PresencePayload presence = presenceFuture.get(5, TimeUnit.SECONDS);
-        assertThat(presence.userIds()).contains(userId.toString());
+        // Brief pause so SimpleBroker registers the subscription before the SEND below.
+        Thread.sleep(100);
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "DRAW", "data", Map.of("type", "stroke")));
+
+        BroadcastCanvasMessage msg = drawFuture.get(5, TimeUnit.SECONDS);
+        assertThat(msg.userId()).isEqualTo(userId.toString());
     }
 
     // -------------------------------------------------------------------------
@@ -170,23 +177,30 @@ class WhiteboardWebSocketIT {
 
     /**
      * Given a board where user B has no membership,
-     * when user B subscribes to {@code /topic/whiteboard/{boardId}},
-     * then user B does not appear in the board's presence list.
+     * when user B subscribes to {@code /topic/whiteboard/{boardId}} and the owner then sends
+     * a DRAW action,
+     * then user B never receives the broadcast (the SUBSCRIBE was silently dropped).
      */
     @Test
-    void non_member_subscribe_is_denied_and_user_absent_from_presence() throws Exception {
+    void non_member_subscribe_is_denied_and_never_receives_broadcast() throws Exception {
         UUID tenantId = UUID.randomUUID();
         UUID ownerId = UUID.randomUUID();
         UUID nonMemberId = UUID.randomUUID();
         Board board = createBoardWithOwner(tenantId, ownerId);
 
-        StompSession session = connectAs(nonMemberId, tenantId);
-        session.subscribe("/topic/whiteboard/" + board.getId(), new NoopFrameHandler());
+        StompSession nonMemberSession = connectAs(nonMemberId, tenantId);
+        CompletableFuture<BroadcastCanvasMessage> drawFuture = new CompletableFuture<>();
+        nonMemberSession.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, drawFuture));
 
-        Thread.sleep(500);
+        Thread.sleep(200);
 
-        List<String> present = presenceRegistry.getPresent(tenantId, board.getId());
-        assertThat(present).doesNotContain(nonMemberId.toString());
+        StompSession ownerSession = connectAs(ownerId, tenantId);
+        ownerSession.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "DRAW", "data", Map.of("type", "stroke")));
+
+        assertThatExceptionOfType(TimeoutException.class)
+                .isThrownBy(() -> drawFuture.get(2, TimeUnit.SECONDS));
     }
 
     // -------------------------------------------------------------------------
@@ -196,7 +210,7 @@ class WhiteboardWebSocketIT {
     /**
      * Given board B created in tenant T1,
      * when user from tenant T2 subscribes to {@code /topic/whiteboard/{B.id}},
-     * then the subscription is denied and the user does not appear in the presence list.
+     * then the subscription is denied and no broadcast is ever received.
      */
     @Test
     void cross_tenant_subscribe_is_denied() throws Exception {
@@ -207,15 +221,15 @@ class WhiteboardWebSocketIT {
         UUID tenantT2 = UUID.randomUUID();
         UUID userT2 = UUID.randomUUID();
 
-        StompSession session = connectAs(userT2, tenantT2);
-        session.subscribe("/topic/whiteboard/" + board.getId(), new NoopFrameHandler());
+        StompSession sessionT2 = connectAs(userT2, tenantT2);
+        CompletableFuture<BroadcastCanvasMessage> drawFuture = new CompletableFuture<>();
+        sessionT2.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, drawFuture));
 
-        Thread.sleep(500);
+        Thread.sleep(200);
 
-        List<String> presentT1 = presenceRegistry.getPresent(tenantT1, board.getId());
-        List<String> presentT2 = presenceRegistry.getPresent(tenantT2, board.getId());
-        assertThat(presentT1).doesNotContain(userT2.toString());
-        assertThat(presentT2).doesNotContain(userT2.toString());
+        assertThatExceptionOfType(TimeoutException.class)
+                .isThrownBy(() -> drawFuture.get(2, TimeUnit.SECONDS));
     }
 
     // -------------------------------------------------------------------------
@@ -225,7 +239,7 @@ class WhiteboardWebSocketIT {
     /**
      * Given user A is member of board 1 but not board 2,
      * when user A subscribes to board 2 (denied) then to board 1 (allowed),
-     * then user A appears in the board 1 presence list (session remained active).
+     * then user A still receives broadcasts on board 1 (session remained active).
      */
     @Test
     void denied_subscribe_does_not_close_session() throws Exception {
@@ -236,49 +250,19 @@ class WhiteboardWebSocketIT {
 
         StompSession session = connectAs(userId, tenantId);
 
-        CompletableFuture<PresencePayload> board1PresenceFuture = new CompletableFuture<>();
-        session.subscribe("/topic/whiteboard/" + board1.getId() + "/presence",
-                presenceHandler(PresencePayload.class, board1PresenceFuture));
-
+        CompletableFuture<BroadcastCanvasMessage> board1DrawFuture = new CompletableFuture<>();
         session.subscribe("/topic/whiteboard/" + board2.getId(), new NoopFrameHandler());
+        session.subscribe("/topic/whiteboard/" + board1.getId(),
+                framHandler(BroadcastCanvasMessage.class, board1DrawFuture));
 
-        session.subscribe("/topic/whiteboard/" + board1.getId(), new NoopFrameHandler());
+        Thread.sleep(100);
 
-        PresencePayload presence = board1PresenceFuture.get(5, TimeUnit.SECONDS);
-        assertThat(presence.userIds()).contains(userId.toString());
+        session.send("/app/whiteboard/" + board1.getId() + "/action",
+                Map.of("type", "DRAW", "data", Map.of("type", "stroke")));
+
+        BroadcastCanvasMessage msg = board1DrawFuture.get(5, TimeUnit.SECONDS);
+        assertThat(msg.userId()).isEqualTo(userId.toString());
         assertThat(session.isConnected()).isTrue();
-    }
-
-    // -------------------------------------------------------------------------
-    // Test 6 — Presence cleaned up on disconnect
-    // -------------------------------------------------------------------------
-
-    /**
-     * Given a connected member,
-     * when the session disconnects,
-     * then the user is removed from the board's presence list.
-     */
-    @Test
-    void presence_removed_on_disconnect() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
-        Board board = createBoardWithOwner(tenantId, userId);
-
-        StompSession session = connectAs(userId, tenantId);
-
-        CompletableFuture<PresencePayload> joinFuture = new CompletableFuture<>();
-        session.subscribe("/topic/whiteboard/" + board.getId() + "/presence",
-                presenceHandler(PresencePayload.class, joinFuture));
-        session.subscribe("/topic/whiteboard/" + board.getId(), new NoopFrameHandler());
-
-        joinFuture.get(5, TimeUnit.SECONDS);
-
-        openSessions.remove(session);
-        session.disconnect();
-        Thread.sleep(500);
-
-        List<String> present = presenceRegistry.getPresent(tenantId, board.getId());
-        assertThat(present).doesNotContain(userId.toString());
     }
 
     // -------------------------------------------------------------------------
@@ -343,26 +327,25 @@ class WhiteboardWebSocketIT {
     }
 
     /**
-     * Creates a {@link StompFrameHandler} that completes the given future with the first
-     * received payload of the specified type.
+     * Returns a {@link StompFrameHandler} that completes the given future with the
+     * received payload.
      *
-     * @param payloadType the expected payload class
-     * @param future      the future to complete on first frame
-     * @param <T>         the payload type parameter
-     * @return the frame handler
+     * @param type   the expected payload class
+     * @param future the future to complete
+     * @param <T>    the payload type
+     * @return a frame handler
      */
-    private <T> StompFrameHandler presenceHandler(
-            final Class<T> payloadType, final CompletableFuture<T> future) {
+    private <T> StompFrameHandler framHandler(final Class<T> type, final CompletableFuture<T> future) {
         return new StompFrameHandler() {
             @Override
             public Type getPayloadType(final StompHeaders headers) {
-                return payloadType;
+                return type;
             }
 
             @Override
             public void handleFrame(final StompHeaders headers, final Object payload) {
-                if (payloadType.isInstance(payload) && !future.isDone()) {
-                    future.complete(payloadType.cast(payload));
+                if (!future.isDone()) {
+                    future.complete(type.cast(payload));
                 }
             }
         };

@@ -1,0 +1,82 @@
+package fr.pivot.collaboratif.whiteboard.canvas;
+
+import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantsUpdatePayload;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+
+import java.util.List;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Unit tests for {@link ParticipantsBroadcastService} (US08.5.1) — the single shared
+ * PARTICIPANTS_UPDATE broadcaster used by both {@code CanvasActionService} (explicit
+ * JOIN/LEAVE) and {@link fr.pivot.collaboratif.whiteboard.ws.WhiteboardPresenceRegistry}
+ * (disconnect cleanup).
+ */
+@ExtendWith(MockitoExtension.class)
+class ParticipantsBroadcastServiceTest {
+
+    @Mock
+    private SimpMessagingTemplate messagingTemplate;
+
+    @Mock
+    private ParticipantMetaStore participantMetaStore;
+
+    private ParticipantsBroadcastService broadcastService;
+
+    private static final UUID TENANT_ID = UUID.randomUUID();
+    private static final UUID BOARD_ID = UUID.randomUUID();
+
+    /** Initialises the service under test with mocked dependencies. */
+    @BeforeEach
+    void setUp() {
+        broadcastService = new ParticipantsBroadcastService(messagingTemplate, participantMetaStore);
+    }
+
+    /**
+     * Given a board with two participants stored,
+     * when broadcast() is called,
+     * then a PARTICIPANTS_UPDATE with both participants is sent to the board's presence topic.
+     */
+    @Test
+    void broadcast_sends_current_participant_list_to_presence_topic() {
+        ParticipantInfo alice = new ParticipantInfo(UUID.randomUUID().toString(), "Alice", null, "#E91E63", "OWNER");
+        ParticipantInfo bob = new ParticipantInfo(UUID.randomUUID().toString(), "Bob", null, "#9C27B0", "EDITOR");
+        when(participantMetaStore.getAll(TENANT_ID, BOARD_ID)).thenReturn(List.of(alice, bob));
+
+        broadcastService.broadcast(TENANT_ID, BOARD_ID);
+
+        ArgumentCaptor<ParticipantsUpdatePayload> payloadCaptor = ArgumentCaptor.forClass(ParticipantsUpdatePayload.class);
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/whiteboard/" + BOARD_ID + "/presence"), (Object) payloadCaptor.capture());
+        assertThat(payloadCaptor.getValue().participants()).containsExactly(alice, bob);
+    }
+
+    /**
+     * Given a board with no participants stored,
+     * when broadcast() is called,
+     * then a PARTICIPANTS_UPDATE with an empty list is still sent (not skipped).
+     */
+    @Test
+    void broadcast_sends_empty_list_when_board_has_no_participants() {
+        when(participantMetaStore.getAll(TENANT_ID, BOARD_ID)).thenReturn(List.of());
+
+        broadcastService.broadcast(TENANT_ID, BOARD_ID);
+
+        ArgumentCaptor<ParticipantsUpdatePayload> payloadCaptor = ArgumentCaptor.forClass(ParticipantsUpdatePayload.class);
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/whiteboard/" + BOARD_ID + "/presence"), (Object) payloadCaptor.capture());
+        assertThat(payloadCaptor.getValue().participants()).isEmpty();
+    }
+}
