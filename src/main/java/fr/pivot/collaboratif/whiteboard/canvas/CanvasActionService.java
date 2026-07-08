@@ -5,9 +5,9 @@ import fr.pivot.collaboratif.whiteboard.board.BoardRole;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
-import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantsUpdatePayload;
 import fr.pivot.collaboratif.whiteboard.ws.ErrorPayload;
 import fr.pivot.collaboratif.whiteboard.ws.StompPrincipal;
+import fr.pivot.collaboratif.whiteboard.ws.WhiteboardPresenceRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +18,6 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.OffsetDateTime;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -47,7 +46,6 @@ public class CanvasActionService {
     private static final Logger LOG = LoggerFactory.getLogger(CanvasActionService.class);
 
     private static final String BOARD_TOPIC_PREFIX = "/topic/whiteboard/";
-    private static final String PRESENCE_SUFFIX = "/presence";
 
     /** Micrometer counter name for throttled canvas messages (declared in US08.3.1). */
     static final String THROTTLED_COUNTER = "messages.throttled.total";
@@ -59,17 +57,26 @@ public class CanvasActionService {
     private final BoardMemberRepository boardMemberRepository;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
+    private final WhiteboardPresenceRegistry presenceRegistry;
+    private final ParticipantsBroadcastService participantsBroadcastService;
 
     /**
      * Creates the service.
      *
-     * @param messagingTemplate      STOMP broadcast template
-     * @param canvasEventRepository  JPA repository for DRAW persistence
-     * @param colorPaletteService    deterministic colour assignment
-     * @param participantMetaStore   Redis store for participant metadata
-     * @param boardMemberRepository  JPA repository for role lookups
-     * @param objectMapper           Jackson 3 mapper for payload serialisation
-     * @param meterRegistry          Micrometer registry for operational metrics
+     * @param messagingTemplate            STOMP broadcast template
+     * @param canvasEventRepository        JPA repository for DRAW persistence
+     * @param colorPaletteService          deterministic colour assignment
+     * @param participantMetaStore         Redis store for participant metadata
+     * @param boardMemberRepository        JPA repository for role lookups
+     * @param objectMapper                 Jackson 3 mapper for payload serialisation
+     * @param meterRegistry                Micrometer registry for operational metrics
+     * @param presenceRegistry             session-liveness registry, updated on JOIN/LEAVE so
+     *                                     that a later WebSocket disconnect can tell whether it
+     *                                     was the user's last active session on the board
+     *                                     (resolution of #32)
+     * @param participantsBroadcastService shared PARTICIPANTS_UPDATE broadcaster, also used by
+     *                                     {@link WhiteboardPresenceRegistry} on disconnect
+     *                                     cleanup — single source of truth for this topic
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -78,7 +85,9 @@ public class CanvasActionService {
             final ParticipantMetaStore participantMetaStore,
             final BoardMemberRepository boardMemberRepository,
             final ObjectMapper objectMapper,
-            final MeterRegistry meterRegistry) {
+            final MeterRegistry meterRegistry,
+            final WhiteboardPresenceRegistry presenceRegistry,
+            final ParticipantsBroadcastService participantsBroadcastService) {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
         this.colorPaletteService = colorPaletteService;
@@ -86,6 +95,8 @@ public class CanvasActionService {
         this.boardMemberRepository = boardMemberRepository;
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
+        this.presenceRegistry = presenceRegistry;
+        this.participantsBroadcastService = participantsBroadcastService;
     }
 
     /**
@@ -97,8 +108,14 @@ public class CanvasActionService {
      * @param boardId   the target board UUID (from the STOMP destination path variable)
      * @param message   the incoming canvas action
      * @param principal the authenticated STOMP session principal
+     * @param sessionId the STOMP session ID of the sender (used for the presence liveness
+     *                  registry on JOIN/LEAVE, resolution of #32)
      */
-    public void handle(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+    public void handle(
+            final UUID boardId,
+            final CanvasActionMessage message,
+            final StompPrincipal principal,
+            final String sessionId) {
         if (message.type() == null) {
             LOG.warn("Received canvas message with null type — board={} user={}", boardId, principal.userId());
             return;
@@ -119,8 +136,8 @@ public class CanvasActionService {
             return;
         }
         switch (eventType) {
-            case JOIN -> handleJoin(boardId, message, principal);
-            case LEAVE -> handleLeave(boardId, principal);
+            case JOIN -> handleJoin(boardId, message, principal, sessionId);
+            case LEAVE -> handleLeave(boardId, principal, sessionId);
             case DRAW -> handleDraw(boardId, message, principal);
             case CURSOR_MOVE -> handleCursorMove(boardId, message, principal);
             case UNDO -> handleUndo(boardId, message, principal);
@@ -132,10 +149,21 @@ public class CanvasActionService {
     // -------------------------------------------------------------------------
 
     /**
-     * Handles a JOIN action: assigns colour, stores participant metadata, broadcasts
-     * the JOIN event and emits PARTICIPANTS_UPDATE.
+     * Handles a JOIN action: assigns colour, stores participant metadata, registers the
+     * session in the presence liveness registry, broadcasts the JOIN event and emits
+     * PARTICIPANTS_UPDATE.
+     *
+     * <p>Colour assignment is deterministic by {@code userId} ({@link ColorPaletteService}),
+     * so a reconnection or a duplicate JOIN from another tab of the same user keeps the same
+     * colour. {@link ParticipantMetaStore#put} overwrites any existing entry for the same
+     * {@code userId}, so a duplicate JOIN (multi-tab) results in a single participant entry
+     * reflecting the most recent JOIN's metadata — "last active connection wins".
      */
-    private void handleJoin(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+    private void handleJoin(
+            final UUID boardId,
+            final CanvasActionMessage message,
+            final StompPrincipal principal,
+            final String sessionId) {
         Map<String, Object> data = message.data() != null ? message.data() : Map.of();
         String displayName = (String) data.getOrDefault("displayName", "Anonymous");
         String avatarUrl = (String) data.get("avatarUrl");
@@ -145,6 +173,7 @@ public class CanvasActionService {
         ParticipantInfo info = new ParticipantInfo(
                 principal.userId().toString(), displayName, avatarUrl, color, role);
         participantMetaStore.put(principal.tenantId(), boardId, info);
+        presenceRegistry.registerSession(principal.tenantId(), boardId, principal.userId(), sessionId);
 
         Map<String, Object> broadcastData = new HashMap<>();
         broadcastData.put("displayName", displayName);
@@ -153,18 +182,25 @@ public class CanvasActionService {
         broadcastData.put("role", role);
 
         broadcast(boardId, principal, CanvasEventType.JOIN, broadcastData);
-        broadcastParticipantsUpdate(principal.tenantId(), boardId);
+        participantsBroadcastService.broadcast(principal.tenantId(), boardId);
         LOG.info("Canvas JOIN: board={} user={} displayName={}", boardId, principal.userId(), displayName);
     }
 
     /**
-     * Handles a LEAVE action: removes participant metadata, broadcasts LEAVE and
-     * emits PARTICIPANTS_UPDATE.
+     * Handles a LEAVE action: removes participant metadata, unregisters the session from the
+     * presence liveness registry, broadcasts LEAVE and emits PARTICIPANTS_UPDATE.
+     *
+     * <p>An explicit LEAVE always clears the participant's presence unconditionally — it does
+     * not wait for every session/tab of the user to have left. This mirrors the pre-#32
+     * behaviour and is intentionally different from a WebSocket disconnect without a prior
+     * LEAVE, which only clears presence when it was the user's last active session
+     * ({@link WhiteboardPresenceRegistry#handleDisconnect}).
      */
-    private void handleLeave(final UUID boardId, final StompPrincipal principal) {
+    private void handleLeave(final UUID boardId, final StompPrincipal principal, final String sessionId) {
         participantMetaStore.remove(principal.tenantId(), boardId, principal.userId());
+        presenceRegistry.unregisterSession(principal.tenantId(), boardId, principal.userId(), sessionId);
         broadcast(boardId, principal, CanvasEventType.LEAVE, Map.of());
-        broadcastParticipantsUpdate(principal.tenantId(), boardId);
+        participantsBroadcastService.broadcast(principal.tenantId(), boardId);
         LOG.info("Canvas LEAVE: board={} user={}", boardId, principal.userId());
     }
 
@@ -225,20 +261,6 @@ public class CanvasActionService {
         BroadcastCanvasMessage msg = new BroadcastCanvasMessage(
                 type.name(), boardId.toString(), principal.userId().toString(), data);
         messagingTemplate.convertAndSend(destination, msg);
-    }
-
-    /**
-     * Broadcasts a PARTICIPANTS_UPDATE with the current full participant list to the
-     * board's presence topic.
-     *
-     * @param tenantId the tenant UUID
-     * @param boardId  the board UUID
-     */
-    private void broadcastParticipantsUpdate(final UUID tenantId, final UUID boardId) {
-        List<ParticipantInfo> participants = participantMetaStore.getAll(tenantId, boardId);
-        String destination = BOARD_TOPIC_PREFIX + boardId + PRESENCE_SUFFIX;
-        messagingTemplate.convertAndSend(destination, new ParticipantsUpdatePayload(participants));
-        LOG.debug("PARTICIPANTS_UPDATE: {} participant(s) on board={}", participants.size(), boardId);
     }
 
     /**
