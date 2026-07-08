@@ -5,6 +5,7 @@ import fr.pivot.collaboratif.whiteboard.ws.StompPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
+import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Controller;
@@ -54,16 +55,20 @@ public class WhiteboardActionController {
      * @param boardId   the board UUID extracted from the STOMP destination path
      * @param message   the deserialised canvas action payload
      * @param principal the STOMP session principal (must be a {@link StompPrincipal})
+     * @param sessionId the STOMP session ID of the sender, used by {@link CanvasActionService}
+     *                  to register/unregister the session in the presence liveness registry
+     *                  on JOIN/LEAVE (resolution of #32)
      */
     @MessageMapping("/whiteboard/{boardId}/action")
     public void handleAction(
             @DestinationVariable("boardId") final UUID boardId,
             @Payload final CanvasActionMessage message,
-            final Principal principal) {
+            final Principal principal,
+            @Header("simpSessionId") final String sessionId) {
         if (!(principal instanceof StompPrincipal stompPrincipal)) {
             LOG.warn("Received canvas action without StompPrincipal — board={}", boardId);
             return;
         }
-        canvasActionService.handle(boardId, message, stompPrincipal);
+        canvasActionService.handle(boardId, message, stompPrincipal, sessionId);
     }
 }
