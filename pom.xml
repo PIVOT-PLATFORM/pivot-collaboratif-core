@@ -26,6 +26,10 @@
 		<!-- JaCoCo 0.8.13 + SpotBugs ASM 9.7 support class 68 max; revert when tools add Java 25 support -->
 		<maven.compiler.release>24</maven.compiler.release>
 		<testcontainers.version>1.21.4</testcontainers.version>
+		<!-- CVE-2026-10532 (LOW, logback-core deserialization) — fixed upstream in 1.5.35,
+		     spring-boot-starter-parent 4.1.0 still manages 1.5.34. Override until the parent
+		     bumps (same fix as pivot-core#208). -->
+		<logback.version>1.5.35</logback.version>
 		<!-- Build reproductible : timestamp d'entrées d'archive figé → même source = même
 		     digest de JAR. Sous-tend la vérification de digest sur reprise (release.yml). -->
 		<project.build.outputTimestamp>2026-07-06T22:42:59Z</project.build.outputTimestamp>
