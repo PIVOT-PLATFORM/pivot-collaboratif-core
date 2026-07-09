@@ -4,6 +4,7 @@ import fr.pivot.collaboratif.whiteboard.ws.SessionTrackingHandlerDecoratorFactor
 import fr.pivot.collaboratif.whiteboard.ws.StompHandshakeHandler;
 import fr.pivot.collaboratif.whiteboard.ws.StompHandshakeInterceptor;
 import fr.pivot.collaboratif.whiteboard.ws.WhiteboardChannelInterceptor;
+import fr.pivot.core.auth.AuthenticatedPrincipalResolver;
 import jakarta.servlet.ServletContext;
 import jakarta.websocket.server.ServerContainer;
 import org.springframework.beans.factory.annotation.Value;
@@ -82,8 +83,12 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  *
  * <p>The inbound channel is instrumented with {@link WhiteboardChannelInterceptor} which
  * enforces board membership on every SUBSCRIBE and SEND frame. The HTTP handshake is
- * guarded by {@link StompHandshakeInterceptor} and {@link StompHandshakeHandler} which
- * reject connections missing identity headers with HTTP 401.
+ * guarded by {@link StompHandshakeInterceptor} and {@link StompHandshakeHandler}, which
+ * validate the {@code Authorization: Bearer} handshake header via the injected {@link
+ * AuthenticatedPrincipalResolver} bean (EN08.3, ADR-022) and reject connections with a missing,
+ * malformed, or rejected bearer token with HTTP 401 — see {@link StompHandshakeInterceptor}'s
+ * JavaDoc for the handshake token convention (a judgment call, not a confirmed contract with
+ * {@code pivot-collaboratif-ui}).
  *
  * <p>Payload size is capped at 64 KB per frame as required by EN08.1 — enforced at
  * <strong>two</strong> levels, both required for the US08.3.1 AC ("payload &gt; limite → STOMP
@@ -135,6 +140,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final WhiteboardChannelInterceptor whiteboardChannelInterceptor;
     private final SessionTrackingHandlerDecoratorFactory sessionTrackingHandlerDecoratorFactory;
+    private final AuthenticatedPrincipalResolver authenticatedPrincipalResolver;
     private final String allowedOrigins;
     private final boolean activemqRelayEnabled;
     private final String activemqRelayHost;
@@ -150,6 +156,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      *                                                {@code whiteboardChannelInterceptor} to
      *                                                force-close a session after repeated
      *                                                rate-limit violations
+     * @param authenticatedPrincipalResolver          the bean that validates a raw bearer token
+     *                                                at handshake time (EN08.3, ADR-022), passed
+     *                                                to {@link StompHandshakeInterceptor}
      * @param allowedOrigins                          CORS-allowed origins from application
      *                                                configuration
      * @param activemqRelayEnabled                    whether to register the EN07.3 broker relay
@@ -163,12 +172,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public WebSocketConfig(
             final WhiteboardChannelInterceptor whiteboardChannelInterceptor,
             final SessionTrackingHandlerDecoratorFactory sessionTrackingHandlerDecoratorFactory,
+            final AuthenticatedPrincipalResolver authenticatedPrincipalResolver,
             @Value("${pivot.cors.allowed-origins:*}") final String allowedOrigins,
             @Value("${pivot.activemq.relay-enabled:true}") final boolean activemqRelayEnabled,
             @Value("${pivot.activemq.relay-host}") final String activemqRelayHost,
             @Value("${pivot.activemq.relay-port}") final int activemqRelayPort) {
         this.whiteboardChannelInterceptor = whiteboardChannelInterceptor;
         this.sessionTrackingHandlerDecoratorFactory = sessionTrackingHandlerDecoratorFactory;
+        this.authenticatedPrincipalResolver = authenticatedPrincipalResolver;
         this.allowedOrigins = allowedOrigins;
         this.activemqRelayEnabled = activemqRelayEnabled;
         this.activemqRelayHost = activemqRelayHost;
@@ -227,7 +238,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         String[] origins = allowedOrigins.split(",");
         registry.addEndpoint("/ws/whiteboard")
                 .setHandshakeHandler(new StompHandshakeHandler())
-                .addInterceptors(new StompHandshakeInterceptor())
+                .addInterceptors(new StompHandshakeInterceptor(authenticatedPrincipalResolver))
                 .setAllowedOriginPatterns(origins);
     }
 
