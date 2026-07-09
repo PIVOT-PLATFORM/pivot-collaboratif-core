@@ -49,12 +49,21 @@
 	  et AuthenticatedPrincipalResolver — le contrat minimal d'identité consommé par EN08.3 pour
 	  remplacer les headers X-Pivot-User-Id/X-Pivot-Tenant-Id non authentifiés. Version épinglée
 	  explicitement, jamais devinée (voir CLAUDE.md).
+
+	  Épinglé à 0.27.1 (pas 0.27.0) : 0.27.0 déclarait un <parent>fr.pivot:pivot-core:0.27.0</parent>
+	  jamais publié comme POM d'agrégateur racine sur GitHub Packages (seuls les JAR des sous-modules
+	  starter/app y étaient déployés), rendant la résolution de dépendance impossible pour tout
+	  consommateur externe — confirmé en CI sur ce repo (fr.pivot:pivot-core:pom:0.27.0 absent).
+	  0.27.1 corrige à la fois la publication du POM racine et le suivi de version du parent des
+	  sous-modules (semantic-release ne committait que le pom.xml racine, désynchronisant
+	  starter/app à 0.27.0 pendant que la racine passait à 0.27.1) — vérifié réel via l'API GitHub
+	  Packages avant ce bump.
 	-->
 	<dependencies>
 		<dependency>
 			<groupId>fr.pivot</groupId>
 			<artifactId>pivot-core-starter</artifactId>
-			<version>0.27.0</version>
+			<version>0.27.1</version>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

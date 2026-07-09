@@ -25,7 +25,11 @@ dans **pivot-docs**.
 (EN17.1, `pivot-core#171`/`#173`/`#176`/`#177`/`#180`, ADR-022) sur GitHub Packages du repo
 `pivot-core`. Ce repo en dépend (`pom.xml`, version épinglée explicitement — jamais devinée) pour
 `fr.pivot.core.auth.AuthenticatedPrincipal`/`AuthenticatedPrincipalResolver`, consommé par
-`fr.pivot.collaboratif.auth.TokenValidationService` (EN08.3).
+`fr.pivot.collaboratif.auth.TokenValidationService` (EN08.3). **Épinglé à 0.27.1** : 0.27.0
+déclarait un `<parent>` (`fr.pivot:pivot-core:0.27.0`) jamais publié comme POM d'agrégateur
+racine sur GitHub Packages, rendant la résolution impossible pour tout consommateur externe —
+corrigé côté `pivot-core` en 0.27.1 (publication du POM racine + suivi de version cohérent entre
+la racine et ses sous-modules).
 
 Packages restants du starter (`fr.pivot.core.tenant`, `fr.pivot.core.team`,
 `fr.pivot.core.modules`, `fr.pivot.core.db`) : pas encore consommés ici — `PivotModule` et le
