@@ -39,6 +39,8 @@ jobs:
         uses: ./.github/actions/setup-java
 
       - name: Compile + Checkstyle + SpotBugs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mvn --no-transfer-progress compile checkstyle:check spotbugs:check -Dmaven.compiler.release=24
 
   # -----------------------------------------
@@ -73,6 +75,7 @@ jobs:
 
       - name: Run tests with coverage
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Datasource is provided by Testcontainers (@ServiceConnection) — no static URL needed.
           SPRING_REDIS_HOST: localhost
           SPRING_REDIS_PORT: 6379

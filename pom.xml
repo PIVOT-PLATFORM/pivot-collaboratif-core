@@ -44,17 +44,18 @@
 	</dependencyManagement>
 
 	<!--
-	  fr.pivot:pivot-core-starter — PAS ENCORE AJOUTÉ.
-	  pivot-core ne publie aujourd'hui aucun artefact sous ce nom : son pom.xml publie
-	  `fr.pivot:pivot-core` (l'application shell complète, version alignée sur pivot-core lui-même),
-	  pas une bibliothèque "starter" séparée avec les seuls packages fr.pivot.core.* (auth, tenant,
-	  team, modules, db). Tant que ce starter n'existe pas comme artefact publiable et versionné
-	  indépendamment, toute dépendance ici serait une coordonnée Maven fictive. Voir CLAUDE.md
-	  (section "Dépendance pivot-core-starter — état réel") et E30/E17 dans pivot-docs.
-	  → Sécurité (opaque tokens, TenantContext) et intégration module registry : différées jusqu'à
-	  publication réelle de ce starter (EN17.x).
+	  fr.pivot:pivot-core-starter — publié réellement à partir de la version 0.27.0 (EN17.1,
+	  pivot-core#171/#173/#176/#177/#180, ADR-022). Expose fr.pivot.core.auth.AuthenticatedPrincipal
+	  et AuthenticatedPrincipalResolver — le contrat minimal d'identité consommé par EN08.3 pour
+	  remplacer les headers X-Pivot-User-Id/X-Pivot-Tenant-Id non authentifiés. Version épinglée
+	  explicitement, jamais devinée (voir CLAUDE.md).
 	-->
 	<dependencies>
+		<dependency>
+			<groupId>fr.pivot</groupId>
+			<artifactId>pivot-core-starter</artifactId>
+			<version>0.27.0</version>
+		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
@@ -130,6 +131,17 @@
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
+
+	<!-- Résolution de fr.pivot:pivot-core-starter (GitHub Packages du repo pivot-core, distinct
+	     du repo de publication de ce module — voir distributionManagement plus bas). Credentials
+	     résolues via le serveur Maven "pivot-core-packages" (.github/actions/setup-java). -->
+	<repositories>
+		<repository>
+			<id>pivot-core-packages</id>
+			<name>GitHub Packages — pivot-core</name>
+			<url>https://maven.pkg.github.com/PIVOT-PLATFORM/pivot-core</url>
+		</repository>
+	</repositories>
 
 	<build>
 		<plugins>
