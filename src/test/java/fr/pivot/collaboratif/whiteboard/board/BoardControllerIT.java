@@ -1,5 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.board;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport.AuthFixture;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEvent;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventType;
@@ -22,6 +24,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -38,8 +41,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * against a real PostgreSQL database and Redis provided by Testcontainers.
  *
  * <p>Covers US08.1.1 acceptance criteria (POST /whiteboard/boards) plus CRUD operations
- * for board list, read, rename, and delete. Each test uses randomly generated UUIDs
- * for tenant and user isolation.
+ * for board list, read, rename, and delete. Each test authenticates via real bearer
+ * tokens issued for tenants/users seeded through {@link PlatformAuthTestSupport}
+ * (EN08.3) — tenant and user isolation is exercised with distinct seeded identities.
  *
  * <p>Note: MockMvc via {@code webAppContextSetup} dispatches against the servlet path
  * directly, without the {@code server.servlet.context-path} prefix. Paths used in tests
@@ -62,17 +66,20 @@ class BoardControllerIT {
 
     /**
      * Supplies container-derived datasource and Redis connection properties to the
-     * Spring context via dynamic property sources.
+     * Spring context via dynamic property sources, and seeds the {@code public} schema
+     * (owned by {@code pivot-core}) before the Spring context and its Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @Autowired
@@ -93,16 +100,31 @@ class BoardControllerIT {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /** Sets up MockMvc from the web application context before each test. */
-    @BeforeEach
-    void setUp() {
-        mockMvc = MockMvcBuilders.webAppContextSetup(wac).build();
-    }
+    private long tenantA;
+    private long userA;
+    private String tokenA;
+    private long tenantB;
+    private String tokenB;
 
-    private static final UUID USER_A = UUID.randomUUID();
-    private static final UUID TENANT_A = UUID.randomUUID();
-    private static final UUID USER_B = UUID.randomUUID();
-    private static final UUID TENANT_B = UUID.randomUUID();
+    /**
+     * Sets up MockMvc from the web application context and seeds two distinct
+     * tenant/user/token fixtures (A and B) before each test.
+     */
+    @BeforeEach
+    void setUp() throws Exception {
+        mockMvc = MockMvcBuilders.webAppContextSetup(wac).build();
+
+        AuthFixture fixtureA = PlatformAuthTestSupport.seedActiveUserWithToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        tenantA = fixtureA.tenantId();
+        userA = fixtureA.userId();
+        tokenA = fixtureA.rawToken();
+
+        AuthFixture fixtureB = PlatformAuthTestSupport.seedActiveUserWithToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        tenantB = fixtureB.tenantId();
+        tokenB = fixtureB.rawToken();
+    }
 
     // -------------------------------------------------------------------------
     // POST /whiteboard/boards
@@ -117,14 +139,13 @@ class BoardControllerIT {
     void createBoard_returnsCreatedWithOwnerRole() throws Exception {
         mockMvc.perform(post(BASE_PATH)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"Sprint Planning\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.title").value("Sprint Planning"))
                 .andExpect(jsonPath("$.role").value("owner"))
                 .andExpect(jsonPath("$.id").isString())
-                .andExpect(jsonPath("$.tenantId").value(TENANT_A.toString()));
+                .andExpect(jsonPath("$.tenantId").value(tenantA));
     }
 
     /**
@@ -136,15 +157,14 @@ class BoardControllerIT {
     void createBoard_withEmptyTitle_returns400WithInvalidTitleCode() throws Exception {
         mockMvc.perform(post(BASE_PATH)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_TITLE"));
     }
 
     /**
-     * Given the X-Pivot-User-Id and X-Pivot-Tenant-Id headers are absent,
+     * Given the Authorization bearer header is absent,
      * when POST /whiteboard/boards is called,
      * then it returns HTTP 401 Unauthorized.
      */
@@ -171,8 +191,7 @@ class BoardControllerIT {
         MvcResult result = mockMvc.perform(post(BASE_PATH)
                         .queryParam("templateId", BRAINSTORM_TEMPLATE_ID.toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"From Brainstorm\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.title").value("From Brainstorm"))
@@ -181,13 +200,13 @@ class BoardControllerIT {
         UUID boardId = UUID.fromString(body.get("id").asText());
 
         List<CanvasEvent> events = canvasEventRepository
-                .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(boardId, TENANT_A);
+                .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(boardId, tenantA);
 
         assertThat(events).hasSize(5);
         assertThat(events).allSatisfy(event -> {
             assertThat(event.getEventType()).isEqualTo(CanvasEventType.DRAW);
-            assertThat(event.getUserId()).isEqualTo(USER_A);
-            assertThat(event.getTenantId()).isEqualTo(TENANT_A);
+            assertThat(event.getUserId()).isEqualTo(userA);
+            assertThat(event.getTenantId()).isEqualTo(tenantA);
             assertThat(event.getPayload()).isNotBlank();
         });
     }
@@ -203,8 +222,7 @@ class BoardControllerIT {
         MvcResult result = mockMvc.perform(post(BASE_PATH)
                         .queryParam("templateId", RETROSPECTIVE_TEMPLATE_ID.toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"From Retro\"}"))
                 .andExpect(status().isCreated())
                 .andReturn();
@@ -212,7 +230,7 @@ class BoardControllerIT {
         UUID boardId = UUID.fromString(body.get("id").asText());
 
         List<CanvasEvent> events = canvasEventRepository
-                .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(boardId, TENANT_A);
+                .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(boardId, tenantA);
 
         assertThat(events).hasSize(7);
     }
@@ -224,10 +242,10 @@ class BoardControllerIT {
      */
     @Test
     void createBoard_withoutTemplateId_hasNoCanvasEvents() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "Blank Board");
+        String boardId = createBoardFor(tokenA, "Blank Board");
 
         List<CanvasEvent> events = canvasEventRepository.findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(
-                UUID.fromString(boardId), TENANT_A);
+                UUID.fromString(boardId), tenantA);
 
         assertThat(events).isEmpty();
     }
@@ -242,8 +260,7 @@ class BoardControllerIT {
         mockMvc.perform(post(BASE_PATH)
                         .queryParam("templateId", "not-a-uuid")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"Board\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_TEMPLATE_ID"));
@@ -261,8 +278,7 @@ class BoardControllerIT {
         mockMvc.perform(post(BASE_PATH)
                         .queryParam("templateId", unknownTemplateId.toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"Board\"}"))
                 .andExpect(status().isNotFound());
     }
@@ -278,12 +294,11 @@ class BoardControllerIT {
      */
     @Test
     void listBoards_returnsOwnedBoards() throws Exception {
-        createBoardFor(USER_A, TENANT_A, "Board A1");
-        createBoardFor(USER_A, TENANT_A, "Board A2");
+        createBoardFor(tokenA, "Board A1");
+        createBoardFor(tokenA, "Board A2");
 
         mockMvc.perform(get(BASE_PATH)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.boards").isArray())
                 .andExpect(jsonPath("$.totalElements").isNumber());
@@ -296,18 +311,17 @@ class BoardControllerIT {
      */
     @Test
     void listBoards_tenantIsolation_userBSeesOnlyOwnBoards() throws Exception {
-        createBoardFor(USER_A, TENANT_A, "Tenant A Board");
-        createBoardFor(USER_B, TENANT_B, "Tenant B Board");
+        createBoardFor(tokenA, "Tenant A Board");
+        createBoardFor(tokenB, "Tenant B Board");
 
         MvcResult result = mockMvc.perform(get(BASE_PATH)
-                        .header("X-Pivot-User-Id", USER_B)
-                        .header("X-Pivot-Tenant-Id", TENANT_B))
+                        .header("Authorization", "Bearer " + tokenB))
                 .andExpect(status().isOk())
                 .andReturn();
 
         JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
         body.get("boards").forEach(board ->
-                assertThat(board.get("tenantId").asText()).isEqualTo(TENANT_B.toString()));
+                assertThat(board.get("tenantId").asLong()).isEqualTo(tenantB));
     }
 
     /**
@@ -319,8 +333,7 @@ class BoardControllerIT {
     void listBoards_withNegativeSize_returns400() throws Exception {
         mockMvc.perform(get(BASE_PATH)
                         .param("size", "-1")
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isBadRequest());
     }
 
@@ -335,11 +348,10 @@ class BoardControllerIT {
      */
     @Test
     void findById_whenOwner_returnsBoard() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "My Board");
+        String boardId = createBoardFor(tokenA, "My Board");
 
         mockMvc.perform(get(BASE_PATH + "/" + boardId)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(boardId))
                 .andExpect(jsonPath("$.title").value("My Board"));
@@ -351,11 +363,10 @@ class BoardControllerIT {
      */
     @Test
     void findById_crossTenant_returns404() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "Tenant A Board");
+        String boardId = createBoardFor(tokenA, "Tenant A Board");
 
         mockMvc.perform(get(BASE_PATH + "/" + boardId)
-                        .header("X-Pivot-User-Id", USER_B)
-                        .header("X-Pivot-Tenant-Id", TENANT_B))
+                        .header("Authorization", "Bearer " + tokenB))
                 .andExpect(status().isNotFound());
     }
 
@@ -366,12 +377,15 @@ class BoardControllerIT {
      */
     @Test
     void findById_nonMember_returns404() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "Private Board");
-        UUID stranger = UUID.randomUUID();
+        String boardId = createBoardFor(tokenA, "Private Board");
+        long strangerId = PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantA, true);
+        String strangerToken = PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                strangerId, "active", Instant.now().plusSeconds(3600));
 
         mockMvc.perform(get(BASE_PATH + "/" + boardId)
-                        .header("X-Pivot-User-Id", stranger)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + strangerToken))
                 .andExpect(status().isNotFound());
     }
 
@@ -386,12 +400,11 @@ class BoardControllerIT {
      */
     @Test
     void renameBoard_whenOwner_returns200WithUpdatedTitle() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "Old Title");
+        String boardId = createBoardFor(tokenA, "Old Title");
 
         mockMvc.perform(patch(BASE_PATH + "/" + boardId)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"New Title\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value("New Title"));
@@ -403,12 +416,11 @@ class BoardControllerIT {
      */
     @Test
     void renameBoard_crossTenant_returns404() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "Title");
+        String boardId = createBoardFor(tokenA, "Title");
 
         mockMvc.perform(patch(BASE_PATH + "/" + boardId)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_B)
-                        .header("X-Pivot-Tenant-Id", TENANT_B)
+                        .header("Authorization", "Bearer " + tokenB)
                         .content("{\"title\": \"Hacked\"}"))
                 .andExpect(status().isNotFound());
     }
@@ -420,12 +432,11 @@ class BoardControllerIT {
      */
     @Test
     void renameBoard_withEmptyTitle_returns400() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "Title");
+        String boardId = createBoardFor(tokenA, "Title");
 
         mockMvc.perform(patch(BASE_PATH + "/" + boardId)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A)
+                        .header("Authorization", "Bearer " + tokenA)
                         .content("{\"title\": \"\"}"))
                 .andExpect(status().isBadRequest());
     }
@@ -441,16 +452,14 @@ class BoardControllerIT {
      */
     @Test
     void deleteBoard_whenOwner_returns204AndBoardIsGone() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "To Delete");
+        String boardId = createBoardFor(tokenA, "To Delete");
 
         mockMvc.perform(delete(BASE_PATH + "/" + boardId)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isNoContent());
 
         mockMvc.perform(get(BASE_PATH + "/" + boardId)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isNotFound());
     }
 
@@ -460,11 +469,10 @@ class BoardControllerIT {
      */
     @Test
     void deleteBoard_crossTenant_returns404() throws Exception {
-        String boardId = createBoardFor(USER_A, TENANT_A, "Title");
+        String boardId = createBoardFor(tokenA, "Title");
 
         mockMvc.perform(delete(BASE_PATH + "/" + boardId)
-                        .header("X-Pivot-User-Id", USER_B)
-                        .header("X-Pivot-Tenant-Id", TENANT_B))
+                        .header("Authorization", "Bearer " + tokenB))
                 .andExpect(status().isNotFound());
     }
 
@@ -476,8 +484,7 @@ class BoardControllerIT {
     @Test
     void deleteBoard_nonExistent_returns404() throws Exception {
         mockMvc.perform(delete(BASE_PATH + "/" + UUID.randomUUID())
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isNotFound());
     }
 
@@ -486,20 +493,18 @@ class BoardControllerIT {
     // -------------------------------------------------------------------------
 
     /**
-     * Creates a board via the API and returns its identifier.
+     * Creates a board via the API using the given caller's bearer token and returns its
+     * identifier.
      *
-     * @param userId   the user creating the board
-     * @param tenantId the tenant the board belongs to
-     * @param title    the board title
+     * @param token the caller's raw bearer token
+     * @param title the board title
      * @return the string representation of the created board's UUID
      * @throws Exception if the HTTP request fails or the response status is not 201
      */
-    private String createBoardFor(
-            final UUID userId, final UUID tenantId, final String title) throws Exception {
+    private String createBoardFor(final String token, final String title) throws Exception {
         MvcResult result = mockMvc.perform(post(BASE_PATH)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Pivot-User-Id", userId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + token)
                         .content("{\"title\": \"" + title + "\"}"))
                 .andExpect(status().isCreated())
                 .andReturn();
