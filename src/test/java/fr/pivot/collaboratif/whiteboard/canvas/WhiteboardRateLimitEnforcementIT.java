@@ -1,5 +1,6 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
 import fr.pivot.collaboratif.whiteboard.board.Board;
 import fr.pivot.collaboratif.whiteboard.board.BoardMember;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
@@ -33,7 +34,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -66,17 +66,21 @@ class WhiteboardRateLimitEnforcementIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies Testcontainer-derived connection properties to the Spring context.
+     * Supplies Testcontainer-derived connection properties to the Spring context and seeds the
+     * {@code public} schema (owned by {@code pivot-core}) before the Spring context and its
+     * Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @LocalServerPort
@@ -112,11 +116,13 @@ class WhiteboardRateLimitEnforcementIT {
      */
     @Test
     void threeConsecutiveRateLimitViolationsActuallyCloseTheConnection() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
+        long tenantId = PlatformAuthTestSupport.seedTenant(jdbcUrl(), dbUser(), dbPassword(), null);
+        long ownerId = PlatformAuthTestSupport.seedUser(jdbcUrl(), dbUser(), dbPassword(), tenantId, true);
+        String token = PlatformAuthTestSupport.issueToken(
+                jdbcUrl(), dbUser(), dbPassword(), ownerId, "active", Instant.now().plusSeconds(3600));
         Board board = createBoardWithOwner(tenantId, ownerId);
 
-        StompSession session = connectAs(ownerId, tenantId);
+        StompSession session = connectAs(token);
         CompletableFuture<String> closureErrorFuture = new CompletableFuture<>();
         session.subscribe("/user/queue/errors", new StompFrameHandler() {
             @Override
@@ -169,19 +175,18 @@ class WhiteboardRateLimitEnforcementIT {
     // =========================================================================
 
     /**
-     * Establishes a STOMP connection with the given identity headers.
+     * Establishes a STOMP connection authenticated via the given bearer token, sent as
+     * {@code Authorization: Bearer <token>} on the handshake HTTP request (EN08.3).
      *
-     * @param userId   the user UUID
-     * @param tenantId the tenant UUID
+     * @param rawToken the raw bearer token
      * @return an open STOMP session
      */
-    private StompSession connectAs(final UUID userId, final UUID tenantId) throws Exception {
+    private StompSession connectAs(final String rawToken) throws Exception {
         WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
         client.setMessageConverter(new JacksonJsonMessageConverter());
 
         WebSocketHttpHeaders httpHeaders = new WebSocketHttpHeaders();
-        httpHeaders.add("X-Pivot-User-Id", userId.toString());
-        httpHeaders.add("X-Pivot-Tenant-Id", tenantId.toString());
+        httpHeaders.add("Authorization", "Bearer " + rawToken);
 
         String url = "ws://localhost:" + port + "/api/collaboratif/ws/whiteboard";
         StompSession session = client.connectAsync(url, httpHeaders, new StompSessionHandlerAdapter() {
@@ -194,15 +199,27 @@ class WhiteboardRateLimitEnforcementIT {
      * Creates a board owned by {@code ownerId} within {@code tenantId} and saves it directly via
      * the JPA repositories.
      *
-     * @param tenantId the tenant UUID
-     * @param ownerId  the owner UUID
+     * @param tenantId the owning tenant's {@code public.tenants.id}
+     * @param ownerId  the owning user's {@code public.users.id}
      * @return the persisted board
      */
-    private Board createBoardWithOwner(final UUID tenantId, final UUID ownerId) {
+    private Board createBoardWithOwner(final long tenantId, final long ownerId) {
         Board board = new Board("Test board", tenantId, ownerId, Instant.now());
         boardRepository.save(board);
         boardMemberRepository.save(new BoardMember(
                 new BoardMemberId(board.getId(), ownerId), BoardRole.OWNER, Instant.now()));
         return board;
+    }
+
+    private String jdbcUrl() {
+        return postgres.getJdbcUrl();
+    }
+
+    private String dbUser() {
+        return postgres.getUsername();
+    }
+
+    private String dbPassword() {
+        return postgres.getPassword();
     }
 }
