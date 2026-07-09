@@ -53,6 +53,14 @@ server:
       internal-proxies: ${PIVOT_TRUSTED_PROXIES:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|0:0:0:0:0:0:0:1}
 
 management:
+  # EN04.2 — port de management Actuator separe du port applicatif (server.port, ci-dessus),
+  # meme pattern que pivot-core (voir Dockerfile). Non route par nginx, isolation reseau
+  # appliquee cote docker-compose (pas de publication host). Quand management.server.port differe
+  # de server.port, Spring Boot n'applique PAS server.servlet.context-path aux endpoints Actuator
+  # (contexte de servlet management distinct) : health reste joignable sur
+  # http://localhost:8081/actuator/health, sans le prefixe /api/collaboratif.
+  server:
+    port: ${MANAGEMENT_SERVER_PORT:8081}
   endpoints:
     web:
       exposure:
