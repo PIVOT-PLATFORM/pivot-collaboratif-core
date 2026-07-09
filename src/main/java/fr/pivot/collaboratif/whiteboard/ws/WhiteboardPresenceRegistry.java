@@ -85,13 +85,13 @@ public class WhiteboardPresenceRegistry {
      * room. Called by {@code CanvasActionService} when an application-level JOIN is processed —
      * never on mere STOMP SUBSCRIBE.
      *
-     * @param tenantId  the user's tenant UUID
+     * @param tenantId  the user's tenant's {@code public.tenants.id}
      * @param boardId   the board UUID
-     * @param userId    the joining user's UUID
+     * @param userId    the joining user's {@code public.users.id}
      * @param sessionId the STOMP session ID of the connection
      */
     public void registerSession(
-            final UUID tenantId, final UUID boardId, final UUID userId, final String sessionId) {
+            final Long tenantId, final UUID boardId, final Long userId, final String sessionId) {
         String sessionsKey = boardSessionsKey(tenantId, boardId, userId);
         redisTemplate.opsForSet().add(sessionsKey, sessionId);
         redisTemplate.expire(sessionsKey, SESSION_TTL);
@@ -110,13 +110,13 @@ public class WhiteboardPresenceRegistry {
      * {@link ParticipantsUpdatePayload} — this method only keeps the liveness bookkeeping
      * consistent so a later disconnect of the same or another session does not double-count.
      *
-     * @param tenantId  the user's tenant UUID
+     * @param tenantId  the user's tenant's {@code public.tenants.id}
      * @param boardId   the board UUID
-     * @param userId    the leaving user's UUID
+     * @param userId    the leaving user's {@code public.users.id}
      * @param sessionId the STOMP session ID that sent the LEAVE
      */
     public void unregisterSession(
-            final UUID tenantId, final UUID boardId, final UUID userId, final String sessionId) {
+            final Long tenantId, final UUID boardId, final Long userId, final String sessionId) {
         redisTemplate.opsForSet().remove(boardSessionsKey(tenantId, boardId, userId), sessionId);
         redisTemplate.opsForSet().remove(SESSION_KEY_PREFIX + sessionId, compositeKey(tenantId, boardId, userId));
         LOG.debug("Session unregistered (explicit LEAVE): board={} user={} tenant={} session={}",
@@ -159,9 +159,9 @@ public class WhiteboardPresenceRegistry {
             return;
         }
         try {
-            UUID tenantId = UUID.fromString(parts[0]);
+            Long tenantId = Long.parseLong(parts[0]);
             UUID boardId = UUID.fromString(parts[1]);
-            UUID userId = UUID.fromString(parts[2]);
+            Long userId = Long.parseLong(parts[2]);
             String sessionsKey = boardSessionsKey(tenantId, boardId, userId);
             redisTemplate.opsForSet().remove(sessionsKey, sessionId);
             Long remaining = redisTemplate.opsForSet().size(sessionsKey);
@@ -183,24 +183,24 @@ public class WhiteboardPresenceRegistry {
     /**
      * Returns the Redis SET key for a user's active sessions on a board.
      *
-     * @param tenantId the tenant UUID
+     * @param tenantId the tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
-     * @param userId   the user UUID
+     * @param userId   the user's {@code public.users.id}
      * @return the Redis key string
      */
-    private String boardSessionsKey(final UUID tenantId, final UUID boardId, final UUID userId) {
+    private String boardSessionsKey(final Long tenantId, final UUID boardId, final Long userId) {
         return BOARD_SESSIONS_PREFIX + tenantId + ":" + boardId + ":" + userId;
     }
 
     /**
      * Builds the composite key stored in a session's reverse-index SET.
      *
-     * @param tenantId the tenant UUID
+     * @param tenantId the tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
-     * @param userId   the user UUID
+     * @param userId   the user's {@code public.users.id}
      * @return the composite key {@code {tenantId}:{boardId}:{userId}}
      */
-    private String compositeKey(final UUID tenantId, final UUID boardId, final UUID userId) {
+    private String compositeKey(final Long tenantId, final UUID boardId, final Long userId) {
         return tenantId + ":" + boardId + ":" + userId;
     }
 }

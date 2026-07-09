@@ -77,8 +77,8 @@ public class BoardShareService {
      *
      * @param boardId   the board to share
      * @param request   share parameters (role, maxUses, ttlDays)
-     * @param callerId  the requesting user's UUID
-     * @param tenantId  the requesting user's tenant UUID
+     * @param callerId  the requesting user's {@code public.users.id}
+     * @param tenantId  the requesting user's tenant's {@code public.tenants.id}
      * @return a response containing the token ID, share link, role and expiry
      * @throws BoardNotFoundException     if the board is inaccessible to the caller
      * @throws BoardAccessDeniedException if the caller is not the OWNER
@@ -88,8 +88,8 @@ public class BoardShareService {
     public ShareBoardResponse generateToken(
             final UUID boardId,
             final ShareBoardRequest request,
-            final UUID callerId,
-            final UUID tenantId) {
+            final Long callerId,
+            final Long tenantId) {
         if (request.role() == BoardRole.OWNER) {
             throw new IllegalArgumentException("INVALID_ROLE");
         }
@@ -120,8 +120,8 @@ public class BoardShareService {
      *
      * @param boardId   the board the token belongs to
      * @param tokenId   the token UUID to revoke
-     * @param callerId  the requesting user's UUID
-     * @param tenantId  the requesting user's tenant UUID
+     * @param callerId  the requesting user's {@code public.users.id}
+     * @param tenantId  the requesting user's tenant's {@code public.tenants.id}
      * @throws BoardNotFoundException          if the board is inaccessible
      * @throws BoardAccessDeniedException      if the caller is not the OWNER
      * @throws BoardShareTokenNotFoundException if the token is not found or already revoked
@@ -130,8 +130,8 @@ public class BoardShareService {
     public void revokeToken(
             final UUID boardId,
             final UUID tokenId,
-            final UUID callerId,
-            final UUID tenantId) {
+            final Long callerId,
+            final Long tenantId) {
         Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
         requireOwner(boardId, callerId, board.getOwnerId());
@@ -144,7 +144,7 @@ public class BoardShareService {
         logAuditEvent("BoardShareRevoked", boardId, callerId, "tokenId=" + tokenId);
     }
 
-    private void requireOwner(final UUID boardId, final UUID callerId, final UUID ownerId) {
+    private void requireOwner(final UUID boardId, final Long callerId, final Long ownerId) {
         if (!callerId.equals(ownerId)) {
             throw new BoardAccessDeniedException(boardId);
         }
@@ -169,7 +169,7 @@ public class BoardShareService {
     private void logAuditEvent(
             final String event,
             final UUID boardId,
-            final UUID actorId,
+            final Long actorId,
             final String details) {
         java.util.logging.Logger.getLogger(getClass().getName())
                 .info(() -> "AUDIT " + event + " board=" + boardId

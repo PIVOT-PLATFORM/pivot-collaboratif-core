@@ -12,7 +12,7 @@ package fr.pivot.collaboratif.whiteboard.canvas.dto;
  * <p>Security: only {@code userId}, {@code displayName}, {@code role} and {@code color}
  * are exposed — never email or other profile data.
  *
- * @param userId      the participant's UUID as a string
+ * @param userId      the participant's {@code public.users.id} as a string
  * @param displayName the display name provided by the client at JOIN
  * @param avatarUrl   optional avatar URL; may be {@code null}
  * @param color       the hex colour assigned by the server (e.g. {@code "#E91E63"})

@@ -242,12 +242,12 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      * Checks whether the given user has exceeded the per-second rate limit using a
      * fixed-window Redis INCR counter with a 1-second TTL.
      *
-     * @param tenantId the user's tenant UUID
+     * @param tenantId the user's tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
-     * @param userId   the user UUID
+     * @param userId   the user's {@code public.users.id}
      * @return {@code true} if the limit is exceeded; {@code false} otherwise
      */
-    private boolean isRateLimited(final UUID tenantId, final UUID boardId, final UUID userId) {
+    private boolean isRateLimited(final Long tenantId, final UUID boardId, final Long userId) {
         String key = RATE_KEY_PREFIX + tenantId + ":" + boardId + ":" + userId;
         Long count = redisTemplate.opsForValue().increment(key);
         if (Long.valueOf(1L).equals(count)) {
@@ -265,13 +265,13 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      * client receives an error and is expected to disconnect — see US08.3.1).
      *
      * @param sessionId the STOMP session ID (used as part of the key)
-     * @param tenantId  the tenant UUID
+     * @param tenantId  the tenant's {@code public.tenants.id}
      * @param boardId   the board UUID
-     * @param userId    the user UUID
+     * @param userId    the user's {@code public.users.id}
      * @return the current strike count after incrementing
      */
     private long incrementStrikes(
-            final String sessionId, final UUID tenantId, final UUID boardId, final UUID userId) {
+            final String sessionId, final Long tenantId, final UUID boardId, final Long userId) {
         String key = STRIKES_KEY_PREFIX + sessionId + ":" + tenantId + ":" + boardId + ":" + userId;
         Long count = redisTemplate.opsForValue().increment(key);
         if (Long.valueOf(1L).equals(count)) {
@@ -284,12 +284,12 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      * Resets the strike counter for the session after a successful (non-rate-limited) message.
      *
      * @param sessionId the STOMP session ID
-     * @param tenantId  the tenant UUID
+     * @param tenantId  the tenant's {@code public.tenants.id}
      * @param boardId   the board UUID
-     * @param userId    the user UUID
+     * @param userId    the user's {@code public.users.id}
      */
     private void resetStrikes(
-            final String sessionId, final UUID tenantId, final UUID boardId, final UUID userId) {
+            final String sessionId, final Long tenantId, final UUID boardId, final Long userId) {
         if (sessionId == null) {
             return;
         }

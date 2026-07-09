@@ -36,11 +36,11 @@ public class Board {
 
     /** Tenant that owns this board; used for multi-tenant isolation. */
     @Column(name = "tenant_id", nullable = false)
-    private UUID tenantId;
+    private Long tenantId;
 
     /** User who created and owns this board. */
     @Column(name = "owner_id", nullable = false)
-    private UUID ownerId;
+    private Long ownerId;
 
     /** Visibility of the board; defaults to {@link BoardVisibility#PRIVATE}. */
     @Enumerated(EnumType.STRING)
@@ -63,14 +63,14 @@ public class Board {
      * Full constructor for creating a new board with all fields.
      *
      * @param title    board title (max 100 chars)
-     * @param tenantId owning tenant UUID
-     * @param ownerId  creating user UUID
+     * @param tenantId owning tenant's {@code public.tenants.id}
+     * @param ownerId  creating user's {@code public.users.id}
      * @param now      timestamp used for both {@code createdAt} and {@code updatedAt}
      */
     public Board(
             final String title,
-            final UUID tenantId,
-            final UUID ownerId,
+            final Long tenantId,
+            final Long ownerId,
             final Instant now) {
         this.title = title;
         this.tenantId = tenantId;
@@ -133,18 +133,18 @@ public class Board {
     /**
      * Returns the tenant identifier.
      *
-     * @return the tenant UUID
+     * @return the tenant's {@code public.tenants.id}
      */
-    public UUID getTenantId() {
+    public Long getTenantId() {
         return tenantId;
     }
 
     /**
      * Returns the owner user identifier.
      *
-     * @return the owner UUID
+     * @return the owner's {@code public.users.id}
      */
-    public UUID getOwnerId() {
+    public Long getOwnerId() {
         return ownerId;
     }
 

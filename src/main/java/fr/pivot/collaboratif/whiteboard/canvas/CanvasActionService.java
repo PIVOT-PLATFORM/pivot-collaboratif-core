@@ -268,10 +268,10 @@ public class CanvasActionService {
      * when the membership record is not found.
      *
      * @param boardId the board UUID
-     * @param userId  the user UUID
+     * @param userId  the user's {@code public.users.id}
      * @return the role name (e.g. {@code "OWNER"}, {@code "EDITOR"}, {@code "VIEWER"})
      */
-    private String resolveRoleName(final UUID boardId, final UUID userId) {
+    private String resolveRoleName(final UUID boardId, final Long userId) {
         return boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, userId)
                 .map(m -> m.getRole().name())
                 .orElse(BoardRole.VIEWER.name());
@@ -281,10 +281,10 @@ public class CanvasActionService {
      * Checks whether the given user has the VIEWER role on the board.
      *
      * @param boardId the board UUID
-     * @param userId  the user UUID
+     * @param userId  the user's {@code public.users.id}
      * @return {@code true} if the user is a VIEWER (or membership not found)
      */
-    private boolean isViewer(final UUID boardId, final UUID userId) {
+    private boolean isViewer(final UUID boardId, final Long userId) {
         return boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, userId)
                 .map(m -> m.getRole() == BoardRole.VIEWER)
                 .orElse(true);

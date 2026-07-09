@@ -2,8 +2,6 @@ package fr.pivot.collaboratif.whiteboard.board;
 
 import org.springframework.stereotype.Component;
 
-import java.util.UUID;
-
 /**
  * Bootstrap implementation of {@link WhiteboardModuleCheck}.
  *
@@ -19,11 +17,12 @@ public class DefaultWhiteboardModuleCheck implements WhiteboardModuleCheck {
      * Always returns {@code true}, indicating the whiteboard module is enabled
      * for any tenant.
      *
-     * @param tenantId the tenant to check (unused in this bootstrap implementation)
+     * @param tenantId the tenant's {@code public.tenants.id} to check (unused in this
+     *                 bootstrap implementation)
      * @return {@code true}
      */
     @Override
-    public boolean isEnabled(final UUID tenantId) {
+    public boolean isEnabled(final Long tenantId) {
         return true;
     }
 }

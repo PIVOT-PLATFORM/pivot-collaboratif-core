@@ -13,9 +13,9 @@ public class BoardAlreadyMemberException extends RuntimeException {
      * Creates the exception for the given board and user.
      *
      * @param boardId the board UUID the user already belongs to
-     * @param userId  the user UUID that is already a member
+     * @param userId  the {@code public.users.id} of the user that is already a member
      */
-    public BoardAlreadyMemberException(final UUID boardId, final UUID userId) {
+    public BoardAlreadyMemberException(final UUID boardId, final Long userId) {
         super("User " + userId + " is already a member of board " + boardId);
     }
 }

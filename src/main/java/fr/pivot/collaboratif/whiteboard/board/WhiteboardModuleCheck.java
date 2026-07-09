@@ -1,7 +1,5 @@
 package fr.pivot.collaboratif.whiteboard.board;
 
-import java.util.UUID;
-
 /**
  * Contract for checking whether the whiteboard module is enabled for a given tenant.
  *
@@ -17,8 +15,8 @@ public interface WhiteboardModuleCheck {
     /**
      * Returns {@code true} if the whiteboard module is active for the given tenant.
      *
-     * @param tenantId the tenant to check
+     * @param tenantId the tenant's {@code public.tenants.id} to check
      * @return {@code true} when whiteboard features are accessible
      */
-    boolean isEnabled(UUID tenantId);
+    boolean isEnabled(Long tenantId);
 }

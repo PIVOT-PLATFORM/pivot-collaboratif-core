@@ -65,7 +65,7 @@ public class BoardMemberController {
      * <p>The board owner's own role cannot be changed, and promotion to OWNER is not allowed.
      *
      * @param boardId      the board UUID from the path
-     * @param userId       the target member's UUID from the path
+     * @param userId       the target member's {@code public.users.id} from the path
      * @param request      the new role — must not be null and must not be OWNER
      * @param principal    the resolved caller identity
      * @return the updated member response
@@ -73,7 +73,7 @@ public class BoardMemberController {
     @PatchMapping("/{userId}/role")
     public MemberResponse updateRole(
             @PathVariable final UUID boardId,
-            @PathVariable final UUID userId,
+            @PathVariable final Long userId,
             @RequestBody @Valid final UpdateMemberRoleRequest request,
             final RequestPrincipal principal) {
         return boardMemberService.updateRole(
@@ -86,14 +86,14 @@ public class BoardMemberController {
      * <p>The board owner cannot be removed.
      *
      * @param boardId   the board UUID from the path
-     * @param userId    the target member's UUID to remove from the path
+     * @param userId    the target member's {@code public.users.id} to remove from the path
      * @param principal the resolved caller identity
      */
     @DeleteMapping("/{userId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void removeMember(
             @PathVariable final UUID boardId,
-            @PathVariable final UUID userId,
+            @PathVariable final Long userId,
             final RequestPrincipal principal) {
         boardMemberService.removeMember(
                 boardId, userId, principal.userId(), principal.tenantId());

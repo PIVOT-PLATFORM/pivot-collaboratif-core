@@ -48,16 +48,16 @@ public class BoardMemberService {
      * <p>Any member (OWNER, EDITOR, VIEWER) may call this. The OWNER entry is included.
      *
      * @param boardId  the board UUID
-     * @param callerId the calling user's UUID
-     * @param tenantId the calling tenant's UUID
+     * @param callerId the calling user's {@code public.users.id}
+     * @param tenantId the calling tenant's {@code public.tenants.id}
      * @return list of all members ordered by join date ascending
      * @throws BoardNotFoundException if the board does not exist, belongs to another tenant,
      *                                or the caller is not a member
      */
     public List<MemberResponse> listMembers(
             final UUID boardId,
-            final UUID callerId,
-            final UUID tenantId) {
+            final Long callerId,
+            final Long tenantId) {
         Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
         requireAccess(boardId, callerId, board.getOwnerId());
@@ -73,10 +73,10 @@ public class BoardMemberService {
      * <p>The board owner's own role and promotions to OWNER are both rejected.
      *
      * @param boardId      the board UUID
-     * @param targetUserId the user whose role is to be changed
+     * @param targetUserId the {@code public.users.id} of the user whose role is to be changed
      * @param newRole      the new role (EDITOR or VIEWER)
-     * @param callerId     the calling user's UUID
-     * @param tenantId     the calling tenant's UUID
+     * @param callerId     the calling user's {@code public.users.id}
+     * @param tenantId     the calling tenant's {@code public.tenants.id}
      * @return the updated member response
      * @throws BoardNotFoundException     if the board is inaccessible to the caller
      * @throws BoardAccessDeniedException if the caller is not the OWNER
@@ -86,10 +86,10 @@ public class BoardMemberService {
     @Transactional
     public MemberResponse updateRole(
             final UUID boardId,
-            final UUID targetUserId,
+            final Long targetUserId,
             final BoardRole newRole,
-            final UUID callerId,
-            final UUID tenantId) {
+            final Long callerId,
+            final Long tenantId) {
         Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
         requireOwner(boardId, callerId, board.getOwnerId());
@@ -115,9 +115,9 @@ public class BoardMemberService {
      * <p>The board owner cannot be removed.
      *
      * @param boardId      the board UUID
-     * @param targetUserId the user to remove
-     * @param callerId     the calling user's UUID
-     * @param tenantId     the calling tenant's UUID
+     * @param targetUserId the {@code public.users.id} of the user to remove
+     * @param callerId     the calling user's {@code public.users.id}
+     * @param tenantId     the calling tenant's {@code public.tenants.id}
      * @throws BoardNotFoundException     if the board is inaccessible to the caller
      * @throws BoardAccessDeniedException if the caller is not the OWNER
      * @throws IllegalArgumentException   if targetUserId is the board owner
@@ -126,9 +126,9 @@ public class BoardMemberService {
     @Transactional
     public void removeMember(
             final UUID boardId,
-            final UUID targetUserId,
-            final UUID callerId,
-            final UUID tenantId) {
+            final Long targetUserId,
+            final Long callerId,
+            final Long tenantId) {
         Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
         requireOwner(boardId, callerId, board.getOwnerId());
@@ -147,7 +147,7 @@ public class BoardMemberService {
      *
      * @throws BoardNotFoundException if the caller has no membership
      */
-    private void requireAccess(final UUID boardId, final UUID callerId, final UUID ownerId) {
+    private void requireAccess(final UUID boardId, final Long callerId, final Long ownerId) {
         if (callerId.equals(ownerId)) {
             return;
         }
@@ -160,7 +160,7 @@ public class BoardMemberService {
      *
      * @throws BoardAccessDeniedException if the caller is not the owner
      */
-    private void requireOwner(final UUID boardId, final UUID callerId, final UUID ownerId) {
+    private void requireOwner(final UUID boardId, final Long callerId, final Long ownerId) {
         requireAccess(boardId, callerId, ownerId);
         if (!callerId.equals(ownerId)) {
             throw new BoardAccessDeniedException(boardId);
@@ -172,13 +172,13 @@ public class BoardMemberService {
      *
      * @param event   the audit event name
      * @param boardId the board UUID
-     * @param actorId the user who performed the action
+     * @param actorId the {@code public.users.id} of the user who performed the action
      * @param details additional details to include in the log entry
      */
     private void logAuditEvent(
             final String event,
             final UUID boardId,
-            final UUID actorId,
+            final Long actorId,
             final String details) {
         java.util.logging.Logger.getLogger(getClass().getName())
                 .info(() -> "AUDIT " + event + " board=" + boardId

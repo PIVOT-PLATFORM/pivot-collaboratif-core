@@ -60,7 +60,7 @@ public class BoardShareToken {
 
     /** User who generated this token. */
     @Column(name = "created_by", nullable = false)
-    private UUID createdBy;
+    private Long createdBy;
 
     /** When this token was created. */
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -78,7 +78,7 @@ public class BoardShareToken {
      * @param role      role assigned on successful join
      * @param maxUses   maximum allowed use count
      * @param expiresAt expiry instant
-     * @param createdBy user who generated the token
+     * @param createdBy {@code public.users.id} of the user who generated the token
      * @param now       creation timestamp
      */
     public BoardShareToken(
@@ -87,7 +87,7 @@ public class BoardShareToken {
             final BoardRole role,
             final int maxUses,
             final Instant expiresAt,
-            final UUID createdBy,
+            final Long createdBy,
             final Instant now) {
         this.boardId = boardId;
         this.tokenHash = tokenHash;
@@ -183,9 +183,9 @@ public class BoardShareToken {
     /**
      * Returns the identifier of the user who created this token.
      *
-     * @return the creator's UUID
+     * @return the creator's {@code public.users.id}
      */
-    public UUID getCreatedBy() {
+    public Long getCreatedBy() {
         return createdBy;
     }
 

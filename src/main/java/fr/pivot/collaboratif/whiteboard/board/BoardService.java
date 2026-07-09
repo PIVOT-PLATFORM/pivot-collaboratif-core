@@ -67,13 +67,13 @@ public class BoardService {
      * transaction. The board's visibility defaults to {@link BoardVisibility#PRIVATE}.
      *
      * @param title    board title (1–100 chars, validated at the controller layer)
-     * @param userId   calling user's UUID
-     * @param tenantId calling tenant's UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
      * @return the created board as a response record
      * @throws WhiteboardModuleDisabledException if the whiteboard module is inactive for the tenant
      */
     @Transactional
-    public BoardResponse create(final String title, final UUID userId, final UUID tenantId) {
+    public BoardResponse create(final String title, final Long userId, final Long tenantId) {
         return create(title, userId, tenantId, null);
     }
 
@@ -88,8 +88,8 @@ public class BoardService {
      * board behind. The board's visibility defaults to {@link BoardVisibility#PRIVATE}.
      *
      * @param title      board title (1–100 chars, validated at the controller layer)
-     * @param userId     calling user's UUID
-     * @param tenantId   calling tenant's UUID
+     * @param userId     calling user's {@code public.users.id}
+     * @param tenantId   calling tenant's {@code public.tenants.id}
      * @param templateId raw {@code templateId} request parameter, or {@code null}/blank for
      *                   a blank board (US08.1.1 behaviour, unchanged)
      * @return the created board as a response record
@@ -105,7 +105,7 @@ public class BoardService {
      */
     @Transactional
     public BoardResponse create(
-            final String title, final UUID userId, final UUID tenantId, final String templateId) {
+            final String title, final Long userId, final Long tenantId, final String templateId) {
         if (!moduleCheck.isEnabled(tenantId)) {
             throw new WhiteboardModuleDisabledException(tenantId);
         }
@@ -126,16 +126,16 @@ public class BoardService {
     /**
      * Returns a paginated list of boards accessible by the caller (owned or shared).
      *
-     * @param userId   calling user's UUID
-     * @param tenantId calling tenant's UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
      * @param page     zero-based page number
      * @param size     requested page size (capped at {@link #MAX_PAGE_SIZE})
      * @return paginated board list with metadata
      * @throws IllegalArgumentException if {@code size} is zero or negative
      */
     public BoardPageResponse findAccessible(
-            final UUID userId,
-            final UUID tenantId,
+            final Long userId,
+            final Long tenantId,
             final int page,
             final int size) {
         if (size <= 0) {
@@ -164,13 +164,13 @@ public class BoardService {
      * disclosure).
      *
      * @param boardId  the board UUID
-     * @param userId   calling user's UUID
-     * @param tenantId calling tenant's UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
      * @return board response for the caller
      * @throws BoardNotFoundException if the board does not exist, belongs to another tenant,
      *                                or the caller is not a member or owner
      */
-    public BoardResponse findById(final UUID boardId, final UUID userId, final UUID tenantId) {
+    public BoardResponse findById(final UUID boardId, final Long userId, final Long tenantId) {
         Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
         BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
@@ -182,8 +182,8 @@ public class BoardService {
      *
      * @param boardId  the board UUID
      * @param newTitle new title (1–100 chars, validated at the controller layer)
-     * @param userId   calling user's UUID
-     * @param tenantId calling tenant's UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
      * @return updated board response
      * @throws BoardNotFoundException     if the board is inaccessible to the caller
      * @throws BoardAccessDeniedException if the caller is not the OWNER
@@ -192,8 +192,8 @@ public class BoardService {
     public BoardResponse rename(
             final UUID boardId,
             final String newTitle,
-            final UUID userId,
-            final UUID tenantId) {
+            final Long userId,
+            final Long tenantId) {
         Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
         BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
@@ -213,13 +213,13 @@ public class BoardService {
      * may delete.
      *
      * @param boardId  the board UUID
-     * @param userId   calling user's UUID
-     * @param tenantId calling tenant's UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
      * @throws BoardNotFoundException     if the board is inaccessible to the caller
      * @throws BoardAccessDeniedException if the caller is not the OWNER
      */
     @Transactional
-    public void delete(final UUID boardId, final UUID userId, final UUID tenantId) {
+    public void delete(final UUID boardId, final Long userId, final Long tenantId) {
         Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
         BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
@@ -239,12 +239,12 @@ public class BoardService {
      * {@link BoardNotFoundException} (to avoid information disclosure) if no membership exists.
      *
      * @param boardId the board UUID
-     * @param userId  the caller's UUID
-     * @param ownerId the board's owner UUID
+     * @param userId  the caller's {@code public.users.id}
+     * @param ownerId the board's owner's {@code public.users.id}
      * @return the caller's role
      * @throws BoardNotFoundException if the caller is not a member or owner of the board
      */
-    private BoardRole resolveRole(final UUID boardId, final UUID userId, final UUID ownerId) {
+    private BoardRole resolveRole(final UUID boardId, final Long userId, final Long ownerId) {
         if (userId.equals(ownerId)) {
             return BoardRole.OWNER;
         }
@@ -257,10 +257,10 @@ public class BoardService {
      * Converts a board entity to a response DTO for the given caller.
      *
      * @param board  the board entity
-     * @param userId the caller's UUID (used to resolve the caller's role)
+     * @param userId the caller's {@code public.users.id} (used to resolve the caller's role)
      * @return the board response
      */
-    private BoardResponse toBoardResponse(final Board board, final UUID userId) {
+    private BoardResponse toBoardResponse(final Board board, final Long userId) {
         BoardRole role = resolveRole(board.getId(), userId, board.getOwnerId());
         return BoardResponse.from(board, role);
     }
@@ -272,13 +272,13 @@ public class BoardService {
      *
      * @param event   the audit event name
      * @param boardId the board UUID
-     * @param actorId the user who performed the action
+     * @param actorId the {@code public.users.id} of the user who performed the action
      * @param details additional details to include in the log entry
      */
     private void logAuditEvent(
             final String event,
             final UUID boardId,
-            final UUID actorId,
+            final Long actorId,
             final String details) {
         java.util.logging.Logger.getLogger(getClass().getName())
                 .info(() -> "AUDIT " + event + " board=" + boardId

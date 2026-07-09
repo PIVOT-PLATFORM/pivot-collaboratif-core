@@ -17,10 +17,10 @@ public interface BoardMemberRepository extends JpaRepository<BoardMember, BoardM
      * Finds the membership record for a specific board-user combination.
      *
      * @param boardId the board UUID
-     * @param userId  the user UUID
+     * @param userId  the user's {@code public.users.id}
      * @return an {@link Optional} containing the membership, or empty if not found
      */
-    Optional<BoardMember> findByIdBoardIdAndIdUserId(UUID boardId, UUID userId);
+    Optional<BoardMember> findByIdBoardIdAndIdUserId(UUID boardId, Long userId);
 
     /**
      * Returns all membership records for the given board, ordered by join date ascending.

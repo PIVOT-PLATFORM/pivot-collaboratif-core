@@ -68,12 +68,12 @@ public class MembershipCacheService {
      * belonging to a different tenant is treated as non-existent (returns {@code false})
      * so that boardId collisions across tenants do not reveal cross-tenant data.
      *
-     * @param tenantId the requesting user's tenant UUID
+     * @param tenantId the requesting user's tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
-     * @param userId   the requesting user UUID
+     * @param userId   the requesting user's {@code public.users.id}
      * @return {@code true} if the user is a member of the board in that tenant
      */
-    public boolean isMember(final UUID tenantId, final UUID boardId, final UUID userId) {
+    public boolean isMember(final Long tenantId, final UUID boardId, final Long userId) {
         String key = AUTH_PREFIX + tenantId + ":" + boardId + ":" + userId;
         String cached = redisTemplate.opsForValue().get(key);
         if (cached != null) {
@@ -90,11 +90,11 @@ public class MembershipCacheService {
      * TTL to 5 minutes. Called on every SEND frame for liveness tracking; not used for
      * authoritative membership decisions.
      *
-     * @param tenantId the user's tenant UUID
+     * @param tenantId the user's tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
-     * @param userId   the user UUID
+     * @param userId   the user's {@code public.users.id}
      */
-    public void refreshHeartbeat(final UUID tenantId, final UUID boardId, final UUID userId) {
+    public void refreshHeartbeat(final Long tenantId, final UUID boardId, final Long userId) {
         String key = HEARTBEAT_PREFIX + tenantId + ":" + boardId + ":" + userId;
         redisTemplate.opsForValue().set(key, MEMBER_VALUE, HEARTBEAT_TTL);
     }
@@ -102,12 +102,12 @@ public class MembershipCacheService {
     /**
      * Checks membership in the database, verifying tenant isolation first.
      *
-     * @param tenantId the requesting tenant UUID
+     * @param tenantId the requesting tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
-     * @param userId   the user UUID
+     * @param userId   the user's {@code public.users.id}
      * @return {@code true} if the user has a membership record on a board owned by the tenant
      */
-    private boolean lookupMembership(final UUID tenantId, final UUID boardId, final UUID userId) {
+    private boolean lookupMembership(final Long tenantId, final UUID boardId, final Long userId) {
         boolean boardOwnedByTenant = boardRepository.findById(boardId)
                 .map(board -> board.getTenantId().equals(tenantId))
                 .orElse(false);

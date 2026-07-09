@@ -78,8 +78,9 @@ public class BoardJoinService {
      * </ol>
      *
      * @param plainToken the raw token value from the query parameter
-     * @param callerId   the joining user's UUID
-     * @param tenantId   the joining user's tenant UUID (from caller's session)
+     * @param callerId   the joining user's {@code public.users.id}
+     * @param tenantId   the joining user's tenant's {@code public.tenants.id} (from caller's
+     *                   session)
      * @return the join response containing board details and redirect URL
      * @throws BoardShareTokenNotFoundException  if the token does not exist (404)
      * @throws BoardShareTokenExpiredException   if the token is expired or quota exhausted (410)
@@ -89,8 +90,8 @@ public class BoardJoinService {
     @Transactional
     public JoinBoardResponse join(
             final String plainToken,
-            final UUID callerId,
-            final UUID tenantId) {
+            final Long callerId,
+            final Long tenantId) {
 
         String submittedHash = sha256Hex(plainToken);
 
@@ -150,7 +151,7 @@ public class BoardJoinService {
     private void logAuditEvent(
             final String event,
             final UUID boardId,
-            final UUID actorId,
+            final Long actorId,
             final String details) {
         java.util.logging.Logger.getLogger(getClass().getName())
                 .info(() -> "AUDIT " + event + " board=" + boardId
