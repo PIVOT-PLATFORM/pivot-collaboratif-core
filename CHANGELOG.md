@@ -1,3 +1,10 @@
+## [0.1.1](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.1.0...v0.1.1) (2026-07-09)
+
+
+### Bug Fixes
+
+* **ci:** GHCR image path doubled the repo segment, missing semver tag ([#49](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/49)) ([5e0ed0d](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/5e0ed0d672ca7182c025c4cf9b6f65997d826d35)), closes [#198](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/198) [#128](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/128)
+
 # [0.1.0](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.0.0...v0.1.0) (2026-07-09)
 
 
