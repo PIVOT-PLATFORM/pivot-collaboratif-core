@@ -56,7 +56,7 @@ Concise et directe. Techniquement précise. Pas de récapitulatifs inutiles.
 | Backend | Java 25 · Spring Boot 4.x · Maven · `--release 24` (pas de preview features) |
 | BDD | PostgreSQL 18 (instance **partagée**, schéma dédié `collaboratif`) · Spring Data JPA · Flyway |
 | Cache | Redis (instance partagée avec les autres modules) |
-| Temps réel | WebSocket STOMP — **pas encore branché**. `pivot-core` n'a lui-même aucun `WebSocketConfig`/STOMP existant à ce jour (dépendance `spring-boot-starter-websocket` présente dans son `pom.xml` mais non configurée) : aucun pattern à répliquer. Cible production (voir `pivot-docs/docs/architecture/platform-overview.md`) : relai STOMP vers **ActiveMQ** (`:61613`), pas le `SimpleBroker` en mémoire — nécessaire pour la scalabilité multi-instance (isolation par room de board, `EN08.1`). À implémenter avec l'US qui l'exige, pas avant. |
+| Temps réel | WebSocket STOMP — **branché** (`WebSocketConfig`, endpoint `/ws/whiteboard`) : `SimpleBroker` en mémoire pour `/topic/whiteboard/*` (isolation par room de board, `EN08.1`), présence, rate limiting (`US08.3.1`). EN07.3 ajoute un relai STOMP additif vers **ActiveMQ** (`:61613`, `/topic/collaboratif.*`) pour le futur bus d'événements inter-domaines — rien n'y publie encore. Handshake authentifié par bearer token (EN08.3, voir section "Authentification"). |
 | Auth | Bearer opaque token `pivot-core`, validé directement contre `public.access_tokens`/`users`/`tenants` via `fr.pivot:pivot-core-starter` (EN08.3, ADR-022 — validation dupliquée localement, jamais d'appel réseau). Voir section "Authentification" plus bas. |
 | Tests | JUnit 5 · Mockito · Testcontainers (PostgreSQL, Redis) |
 | Observabilité | Spring Actuator · Micrometer · Prometheus |
@@ -97,7 +97,8 @@ la BETA).
 **Contexte HTTP :** `server.servlet.context-path: /api/collaboratif` — nginx route
 `/api/collaboratif/**` vers ce service **sans réécriture de chemin** (`proxy_pass` sans chemin
 final), le context-path doit donc reprendre exactement ce préfixe côté JVM. Idem WebSocket :
-`/ws/collaboratif/**` le jour où STOMP est branché.
+endpoint STOMP enregistré à `/ws/whiteboard` (`WebSocketConfig`), soit
+`/api/collaboratif/ws/whiteboard` en URL complète.
 
 Frontend Angular → **pivot-collaboratif-ui**. Documentation/backlog → **pivot-docs**. Shell
 auth/tenant/équipes → **pivot-core**.
