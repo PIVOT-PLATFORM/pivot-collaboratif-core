@@ -35,7 +35,7 @@ class ParticipantsBroadcastServiceTest {
 
     private ParticipantsBroadcastService broadcastService;
 
-    private static final UUID TENANT_ID = UUID.randomUUID();
+    private static final Long TENANT_ID = 100L;
     private static final UUID BOARD_ID = UUID.randomUUID();
 
     /** Initialises the service under test with mocked dependencies. */

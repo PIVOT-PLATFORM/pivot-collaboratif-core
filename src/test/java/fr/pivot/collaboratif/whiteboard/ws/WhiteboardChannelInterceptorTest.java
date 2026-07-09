@@ -48,9 +48,9 @@ import static org.mockito.Mockito.when;
  */
 class WhiteboardChannelInterceptorTest {
 
-    private static final UUID TENANT_ID = UUID.randomUUID();
+    private static final Long TENANT_ID = 100L;
     private static final UUID BOARD_ID = UUID.randomUUID();
-    private static final UUID USER_ID = UUID.randomUUID();
+    private static final Long USER_ID = 1L;
     private static final String SESSION_ID = "session-1";
     private static final String DESTINATION = "/app/whiteboard/" + BOARD_ID + "/action";
     private static final String STRIKES_KEY =
