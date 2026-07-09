@@ -51,9 +51,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * yields a STOMP ERROR frame rather than a silent drop or a hard disconnect, and — crucially —
  * that it does not take down other participants' sessions on the same board.
  *
- * <p>The WebSocket handshake is authenticated via a real {@code Authorization: Bearer <token>}
- * header validated by {@code StompHandshakeInterceptor} (EN08.3), exactly like the REST layer.
- * Tenants/users/tokens are seeded through {@link PlatformAuthTestSupport} — the
+ * <p>The WebSocket handshake itself is anonymous; authentication happens on the STOMP
+ * {@code CONNECT} frame's native {@code Authorization} header, validated by {@code
+ * StompAuthenticationChannelInterceptor} (EN08.3). Tenants/users/tokens are seeded through {@link PlatformAuthTestSupport} — the
  * {@code public.tenants}/{@code public.users} rows must exist before board/board-member rows are
  * inserted since {@code board.tenant_id}/{@code owner_id} and {@code board_member.user_id} now
  * carry FK constraints into those tables.
@@ -169,12 +169,13 @@ class WhiteboardOversizedDrawPayloadIT {
     // =========================================================================
 
     /**
-     * Establishes a STOMP connection, authenticated with the given bearer token on the
-     * handshake {@code Authorization} header, whose top-level session handler captures any
-     * STOMP ERROR frame sent to it (ERROR frames are delivered to the connection-level
-     * handler, never to a per-destination subscription handler).
+     * Establishes a STOMP connection, authenticated with the given bearer token on the STOMP
+     * {@code CONNECT} frame's native {@code Authorization} header, whose top-level session
+     * handler captures any STOMP ERROR frame sent to it (ERROR frames are delivered to the
+     * connection-level handler, never to a per-destination subscription handler).
      *
      * @param rawToken    the raw bearer token to send as {@code Authorization: Bearer <token>}
+     *                    on the CONNECT frame
      * @param errorFuture completed with the ERROR frame body the first time one is received
      * @return an open STOMP session
      */
@@ -183,11 +184,12 @@ class WhiteboardOversizedDrawPayloadIT {
         WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
         client.setMessageConverter(new JacksonJsonMessageConverter());
 
-        WebSocketHttpHeaders httpHeaders = new WebSocketHttpHeaders();
-        httpHeaders.add("Authorization", "Bearer " + rawToken);
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + rawToken);
 
         String url = "ws://localhost:" + port + "/api/collaboratif/ws/whiteboard";
-        StompSession session = client.connectAsync(url, httpHeaders, new StompSessionHandlerAdapter() {
+        StompSession session = client.connectAsync(url, new WebSocketHttpHeaders(), connectHeaders,
+                new StompSessionHandlerAdapter() {
             @Override
             public Type getPayloadType(final StompHeaders headers) {
                 return String.class;

@@ -66,9 +66,11 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * longer represents "presence"; only an explicit JOIN application message does).
  *
  * <p>Uses {@link StandardWebSocketClient} (raw WebSocket, no SockJS) to connect to the
- * endpoint registered by {@link fr.pivot.collaboratif.config.WebSocketConfig}, authenticating
- * the handshake via a real {@code Authorization: Bearer <token>} header validated by {@link
- * StompHandshakeInterceptor} (EN08.3). Tenants/users/tokens are seeded through {@link
+ * endpoint registered by {@link fr.pivot.collaboratif.config.WebSocketConfig}. The WebSocket
+ * upgrade itself carries no identity (anonymous handshake, see {@link StompHandshakeHandler});
+ * authentication happens on the first STOMP frame instead — the bearer token travels as a
+ * native {@code Authorization} header on the STOMP {@code CONNECT} frame, validated by {@link
+ * StompAuthenticationChannelInterceptor} (EN08.3). Tenants/users/tokens are seeded through {@link
  * PlatformAuthTestSupport} — the {@code public.tenants}/{@code public.users} rows must exist
  * before board/board-member rows are inserted since {@code board.tenant_id}/{@code owner_id}
  * and {@code board_member.user_id} now carry FK constraints into those tables. Board and
@@ -133,12 +135,12 @@ class WhiteboardWebSocketIT {
     // -------------------------------------------------------------------------
 
     /**
-     * Given no Authorization header,
-     * when the WebSocket upgrade is attempted,
-     * then the server rejects the handshake and the client future completes exceptionally.
+     * Given no Authorization header on the STOMP CONNECT frame,
+     * when a connection is attempted,
+     * then the server rejects the CONNECT and the client future completes exceptionally.
      */
     @Test
-    void handshake_without_identity_headers_is_rejected() {
+    void connect_without_bearer_token_is_rejected() {
         WebSocketStompClient client = createClient();
         CompletableFuture<StompSession> future = client.connectAsync(
                 wsUrl(),
@@ -305,20 +307,22 @@ class WhiteboardWebSocketIT {
     }
 
     /**
-     * Connects to the WebSocket endpoint using the given bearer token on the handshake
-     * {@code Authorization} header, blocking until the STOMP session is established or
-     * timing out after 5 seconds.
+     * Connects to the WebSocket endpoint using the given bearer token on the STOMP
+     * {@code CONNECT} frame's native {@code Authorization} header, blocking until the STOMP
+     * session is established or timing out after 5 seconds.
      *
-     * @param rawToken the raw bearer token to send as {@code Authorization: Bearer <token>}
+     * @param rawToken the raw bearer token to send as {@code Authorization: Bearer <token>} on
+     *                 the CONNECT frame
      * @return the established {@link StompSession}
      * @throws Exception if the connection fails or times out
      */
     private StompSession connectAs(final String rawToken) throws Exception {
-        WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
-        headers.add("Authorization", "Bearer " + rawToken);
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + rawToken);
         StompSession session = createClient()
-                .connectAsync(wsUrl(), headers, new StompSessionHandlerAdapter() {
-                })
+                .connectAsync(wsUrl(), new WebSocketHttpHeaders(), connectHeaders,
+                        new StompSessionHandlerAdapter() {
+                        })
                 .get(5, TimeUnit.SECONDS);
         openSessions.add(session);
         return session;

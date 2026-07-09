@@ -52,8 +52,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code WhiteboardChannelInterceptorTest}; this class is the real-transport, real-Redis
  * counterpart.
  *
- * <p>Connects to the WebSocket endpoint using a real {@code Authorization: Bearer <token>}
- * header validated by {@code StompHandshakeInterceptor} (EN08.3). Tenants/users/tokens are
+ * <p>The WebSocket handshake itself is anonymous; connects using a real bearer token on the
+ * STOMP {@code CONNECT} frame's native {@code Authorization} header, validated by {@code
+ * StompAuthenticationChannelInterceptor} (EN08.3). Tenants/users/tokens are
  * seeded through {@link PlatformAuthTestSupport} — the {@code public.tenants}/{@code
  * public.users} rows must exist before board/board-member rows are inserted since {@code
  * board.tenant_id}/{@code owner_id} and {@code board_member.user_id} now carry FK constraints
@@ -181,22 +182,24 @@ class WhiteboardRateLimitEnforcementIT {
     // =========================================================================
 
     /**
-     * Connects to the WebSocket endpoint using the given bearer token on the handshake
-     * {@code Authorization} header, blocking until the STOMP session is established or
-     * timing out after 5 seconds.
+     * Connects to the WebSocket endpoint using the given bearer token on the STOMP
+     * {@code CONNECT} frame's native {@code Authorization} header, blocking until the STOMP
+     * session is established or timing out after 5 seconds.
      *
-     * @param rawToken the raw bearer token to send as {@code Authorization: Bearer <token>}
+     * @param rawToken the raw bearer token to send as {@code Authorization: Bearer <token>} on
+     *                 the CONNECT frame
      * @return an open STOMP session
      */
     private StompSession connectAs(final String rawToken) throws Exception {
         WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
         client.setMessageConverter(new JacksonJsonMessageConverter());
 
-        WebSocketHttpHeaders httpHeaders = new WebSocketHttpHeaders();
-        httpHeaders.add("Authorization", "Bearer " + rawToken);
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + rawToken);
 
         String url = "ws://localhost:" + port + "/api/collaboratif/ws/whiteboard";
-        StompSession session = client.connectAsync(url, httpHeaders, new StompSessionHandlerAdapter() {
+        StompSession session = client.connectAsync(url, new WebSocketHttpHeaders(), connectHeaders,
+                new StompSessionHandlerAdapter() {
         }).get(5, TimeUnit.SECONDS);
         openSessions.add(session);
         return session;
