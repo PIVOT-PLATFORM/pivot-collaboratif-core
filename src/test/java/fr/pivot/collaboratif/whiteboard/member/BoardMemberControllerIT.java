@@ -1,5 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.member;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport.AuthFixture;
 import fr.pivot.collaboratif.whiteboard.board.BoardMember;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
@@ -56,17 +58,21 @@ class BoardMemberControllerIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies container-derived connection properties to the Spring context.
+     * Supplies container-derived connection properties to the Spring context, and seeds the
+     * {@code public} schema (owned by {@code pivot-core}) before the Spring context and its
+     * Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @Autowired
@@ -78,25 +84,36 @@ class BoardMemberControllerIT {
     private MockMvc mockMvc;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private UUID ownerId;
-    private UUID tenantId;
-    private UUID editorId;
+    private long ownerId;
+    private long tenantId;
+    private String ownerToken;
+    private long editorId;
+    private String editorToken;
     private UUID boardId;
 
     /**
-     * Creates a fresh board (with OWNER member) and adds an EDITOR member before each test.
-     * All identifiers are randomised to guarantee test isolation.
+     * Seeds a real tenant/owner/token fixture plus a second user (EDITOR) in the same tenant
+     * via {@link PlatformAuthTestSupport} (EN08.3), creates a fresh board owned by that user,
+     * and adds the second user as an EDITOR member before each test.
      */
     @BeforeEach
     void setUp() throws Exception {
         mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
-        ownerId = UUID.randomUUID();
-        tenantId = UUID.randomUUID();
-        editorId = UUID.randomUUID();
+
+        AuthFixture ownerFixture = PlatformAuthTestSupport.seedActiveUserWithToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        tenantId = ownerFixture.tenantId();
+        ownerId = ownerFixture.userId();
+        ownerToken = ownerFixture.rawToken();
+
+        editorId = PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantId, true);
+        editorToken = PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                editorId, "active", Instant.now().plusSeconds(3600));
 
         String createResponse = mockMvc.perform(post(BOARDS_PATH)
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"title\": \"Member Test Board\"}"))
                 .andExpect(status().isCreated())
@@ -120,39 +137,42 @@ class BoardMemberControllerIT {
     @Test
     void listMembers_asOwner_returnsBothMembers() throws Exception {
         mockMvc.perform(get(BOARDS_PATH + "/" + boardId + "/members")
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId))
+                        .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(2)))
                 .andExpect(jsonPath("$[0].role").value("OWNER"))
-                .andExpect(jsonPath("$[1].userId").value(editorId.toString()))
+                .andExpect(jsonPath("$[1].userId").value(editorId))
                 .andExpect(jsonPath("$[1].role").value("EDITOR"));
     }
 
     @Test
     void listMembers_asMember_returns200() throws Exception {
         mockMvc.perform(get(BOARDS_PATH + "/" + boardId + "/members")
-                        .header("X-Pivot-User-Id", editorId)
-                        .header("X-Pivot-Tenant-Id", tenantId))
+                        .header("Authorization", "Bearer " + editorToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(2)));
     }
 
     @Test
     void listMembers_nonMember_returns404() throws Exception {
-        UUID stranger = UUID.randomUUID();
+        long strangerId = PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantId, true);
+        String strangerToken = PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                strangerId, "active", Instant.now().plusSeconds(3600));
+
         mockMvc.perform(get(BOARDS_PATH + "/" + boardId + "/members")
-                        .header("X-Pivot-User-Id", stranger)
-                        .header("X-Pivot-Tenant-Id", tenantId))
+                        .header("Authorization", "Bearer " + strangerToken))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void listMembers_crossTenant_returns404() throws Exception {
-        UUID otherTenant = UUID.randomUUID();
+        AuthFixture otherTenantFixture = PlatformAuthTestSupport.seedActiveUserWithToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+
         mockMvc.perform(get(BOARDS_PATH + "/" + boardId + "/members")
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", otherTenant))
+                        .header("Authorization", "Bearer " + otherTenantFixture.rawToken()))
                 .andExpect(status().isNotFound());
     }
 
@@ -169,20 +189,18 @@ class BoardMemberControllerIT {
     @Test
     void updateRole_ownerChangesEditorToViewer_returns200() throws Exception {
         mockMvc.perform(patch(BOARDS_PATH + "/" + boardId + "/members/" + editorId + "/role")
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\": \"VIEWER\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.userId").value(editorId.toString()))
+                .andExpect(jsonPath("$.userId").value(editorId))
                 .andExpect(jsonPath("$.role").value("VIEWER"));
     }
 
     @Test
     void updateRole_nonOwner_returns403() throws Exception {
         mockMvc.perform(patch(BOARDS_PATH + "/" + boardId + "/members/" + editorId + "/role")
-                        .header("X-Pivot-User-Id", editorId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + editorToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\": \"VIEWER\"}"))
                 .andExpect(status().isForbidden());
@@ -191,8 +209,7 @@ class BoardMemberControllerIT {
     @Test
     void updateRole_targetIsOwner_returns400() throws Exception {
         mockMvc.perform(patch(BOARDS_PATH + "/" + boardId + "/members/" + ownerId + "/role")
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\": \"EDITOR\"}"))
                 .andExpect(status().isBadRequest());
@@ -201,8 +218,7 @@ class BoardMemberControllerIT {
     @Test
     void updateRole_toOwnerRole_returns400() throws Exception {
         mockMvc.perform(patch(BOARDS_PATH + "/" + boardId + "/members/" + editorId + "/role")
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\": \"OWNER\"}"))
                 .andExpect(status().isBadRequest());
@@ -211,8 +227,7 @@ class BoardMemberControllerIT {
     @Test
     void updateRole_nullRole_returns400() throws Exception {
         mockMvc.perform(patch(BOARDS_PATH + "/" + boardId + "/members/" + editorId + "/role")
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\": null}"))
                 .andExpect(status().isBadRequest());
@@ -220,10 +235,9 @@ class BoardMemberControllerIT {
 
     @Test
     void updateRole_memberNotFound_returns404() throws Exception {
-        UUID unknown = UUID.randomUUID();
+        long unknown = 999_999_999L;
         mockMvc.perform(patch(BOARDS_PATH + "/" + boardId + "/members/" + unknown + "/role")
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId)
+                        .header("Authorization", "Bearer " + ownerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"role\": \"VIEWER\"}"))
                 .andExpect(status().isNotFound());
@@ -236,33 +250,29 @@ class BoardMemberControllerIT {
     @Test
     void removeMember_ownerRemovesEditor_returns204() throws Exception {
         mockMvc.perform(delete(BOARDS_PATH + "/" + boardId + "/members/" + editorId)
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId))
+                        .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isNoContent());
     }
 
     @Test
     void removeMember_nonOwner_returns403() throws Exception {
         mockMvc.perform(delete(BOARDS_PATH + "/" + boardId + "/members/" + editorId)
-                        .header("X-Pivot-User-Id", editorId)
-                        .header("X-Pivot-Tenant-Id", tenantId))
+                        .header("Authorization", "Bearer " + editorToken))
                 .andExpect(status().isForbidden());
     }
 
     @Test
     void removeMember_targetIsOwner_returns400() throws Exception {
         mockMvc.perform(delete(BOARDS_PATH + "/" + boardId + "/members/" + ownerId)
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId))
+                        .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isBadRequest());
     }
 
     @Test
     void removeMember_memberNotFound_returns404() throws Exception {
-        UUID unknown = UUID.randomUUID();
+        long unknown = 999_999_999L;
         mockMvc.perform(delete(BOARDS_PATH + "/" + boardId + "/members/" + unknown)
-                        .header("X-Pivot-User-Id", ownerId)
-                        .header("X-Pivot-Tenant-Id", tenantId))
+                        .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isNotFound());
     }
 }

@@ -23,8 +23,8 @@ public interface BoardRepository extends JpaRepository<Board, UUID> {
      * <p>A board is considered accessible if the user is either the owner or
      * an active member. Results are ordered by {@code updatedAt} descending.
      *
-     * @param userId   the user whose accessible boards to find
-     * @param tenantId the tenant to restrict results to
+     * @param userId   the {@code public.users.id} of the user whose accessible boards to find
+     * @param tenantId the {@code public.tenants.id} to restrict results to
      * @param pageable pagination and sorting parameters
      * @return a page of boards accessible to the specified user
      */
@@ -41,8 +41,8 @@ public interface BoardRepository extends JpaRepository<Board, UUID> {
               AND (b.ownerId = :userId OR bm.id.userId = :userId)
             """)
     Page<Board> findAccessibleByUser(
-            @Param("userId") UUID userId,
-            @Param("tenantId") UUID tenantId,
+            @Param("userId") Long userId,
+            @Param("tenantId") Long tenantId,
             Pageable pageable);
 
     /**
@@ -52,8 +52,8 @@ public interface BoardRepository extends JpaRepository<Board, UUID> {
      * to a different tenant, preventing cross-tenant information disclosure.
      *
      * @param id       the board UUID
-     * @param tenantId the expected tenant UUID
+     * @param tenantId the expected tenant's {@code public.tenants.id}
      * @return an {@link Optional} containing the board, or empty if not found
      */
-    Optional<Board> findByIdAndTenantId(UUID id, UUID tenantId);
+    Optional<Board> findByIdAndTenantId(UUID id, Long tenantId);
 }

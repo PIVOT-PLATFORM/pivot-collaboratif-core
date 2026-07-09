@@ -26,9 +26,9 @@ import java.util.UUID;
 /**
  * REST controller exposing whiteboard board operations under {@code /whiteboard/boards}.
  *
- * <p>All endpoints require {@code X-Pivot-User-Id} and {@code X-Pivot-Tenant-Id} headers,
- * resolved into a {@link RequestPrincipal} by {@code RequestPrincipalResolver}. Missing or
- * malformed headers result in HTTP 401.
+ * <p>All endpoints require a valid {@code Authorization: Bearer <token>} header, resolved into
+ * a {@link RequestPrincipal} by {@code RequestPrincipalResolver} (EN08.3). Missing, malformed,
+ * or rejected tokens result in HTTP 401.
  *
  * <p>The full path (including the application context) is
  * {@code /api/collaboratif/whiteboard/boards}.

@@ -25,6 +25,8 @@ jobs:
         uses: ./.github/actions/setup-java
 
       - name: Generate SBOM - Maven CycloneDX
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mvn --no-transfer-progress org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom \
             -DoutputFormat=JSON \

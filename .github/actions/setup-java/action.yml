@@ -10,3 +10,7 @@ runs:
         java-version: '25'
         distribution: 'temurin'
         cache: maven
+        # EN08.3 : credentials GitHub Packages (repo "github" + repo "pivot-core-packages")
+        # gérées via le settings.xml committé (.mvn/settings.xml, chargé par tout mvn/mvnw
+        # via .mvn/maven.config) plutôt qu'ici — un seul fichier, valable aussi bien en CI
+        # que dans le build Docker, pas de duplication de config par job.

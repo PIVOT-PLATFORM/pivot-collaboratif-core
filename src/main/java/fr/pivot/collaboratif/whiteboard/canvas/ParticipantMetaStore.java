@@ -49,11 +49,11 @@ public class ParticipantMetaStore {
     /**
      * Stores a participant's metadata in the board's Redis hash.
      *
-     * @param tenantId tenant UUID
+     * @param tenantId tenant's {@code public.tenants.id}
      * @param boardId  board UUID
      * @param info     the participant info to store
      */
-    public void put(final UUID tenantId, final UUID boardId, final ParticipantInfo info) {
+    public void put(final Long tenantId, final UUID boardId, final ParticipantInfo info) {
         try {
             String json = objectMapper.writeValueAsString(info);
             redisTemplate.opsForHash().put(metaKey(tenantId, boardId), info.userId(), json);
@@ -66,22 +66,22 @@ public class ParticipantMetaStore {
     /**
      * Removes a participant's metadata from the board's Redis hash.
      *
-     * @param tenantId tenant UUID
+     * @param tenantId tenant's {@code public.tenants.id}
      * @param boardId  board UUID
-     * @param userId   the participant to remove
+     * @param userId   the {@code public.users.id} of the participant to remove
      */
-    public void remove(final UUID tenantId, final UUID boardId, final UUID userId) {
+    public void remove(final Long tenantId, final UUID boardId, final Long userId) {
         redisTemplate.opsForHash().delete(metaKey(tenantId, boardId), userId.toString());
     }
 
     /**
      * Returns all participants currently stored for the given board.
      *
-     * @param tenantId tenant UUID
+     * @param tenantId tenant's {@code public.tenants.id}
      * @param boardId  board UUID
      * @return list of participant infos; empty if none present
      */
-    public List<ParticipantInfo> getAll(final UUID tenantId, final UUID boardId) {
+    public List<ParticipantInfo> getAll(final Long tenantId, final UUID boardId) {
         Map<Object, Object> entries = redisTemplate.opsForHash().entries(metaKey(tenantId, boardId));
         List<ParticipantInfo> result = new ArrayList<>();
         for (Object value : entries.values()) {
@@ -98,11 +98,11 @@ public class ParticipantMetaStore {
     /**
      * Returns the Redis HASH key for a board's participant metadata.
      *
-     * @param tenantId tenant UUID
+     * @param tenantId tenant's {@code public.tenants.id}
      * @param boardId  board UUID
      * @return the Redis key
      */
-    private String metaKey(final UUID tenantId, final UUID boardId) {
+    private String metaKey(final Long tenantId, final UUID boardId) {
         return META_KEY_PREFIX + tenantId + ":" + boardId;
     }
 }

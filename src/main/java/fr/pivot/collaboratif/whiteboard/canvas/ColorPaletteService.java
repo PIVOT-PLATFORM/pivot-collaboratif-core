@@ -3,7 +3,6 @@ package fr.pivot.collaboratif.whiteboard.canvas;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * Assigns a deterministic colour to a participant for the duration of their board session.
@@ -28,15 +27,15 @@ public class ColorPaletteService {
     );
 
     /**
-     * Returns a hex colour code deterministically derived from the given user UUID.
+     * Returns a hex colour code deterministically derived from the given user id.
      *
      * <p>The colour is stable: the same {@code userId} always maps to the same colour
      * within the current palette, regardless of session count or timing.
      *
-     * @param userId the user's UUID
+     * @param userId the user's {@code public.users.id}
      * @return a hex colour string from the palette (e.g. {@code "#E91E63"})
      */
-    public String colorForUser(final UUID userId) {
+    public String colorForUser(final Long userId) {
         int index = Math.floorMod(userId.hashCode(), PALETTE.size());
         return PALETTE.get(index);
     }

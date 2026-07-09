@@ -54,8 +54,8 @@ class BoardServiceTest {
 
     private BoardService boardService;
 
-    private static final UUID USER_A = UUID.randomUUID();
-    private static final UUID TENANT_A = UUID.randomUUID();
+    private static final Long USER_A = 1L;
+    private static final Long TENANT_A = 100L;
 
     /** Initialises the service under test with mocked dependencies. */
     @BeforeEach
@@ -268,8 +268,8 @@ class BoardServiceTest {
     @Test
     void findById_whenMemberNotOwner_returnsBoardWithMemberRole() {
         UUID boardId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID editorId = UUID.randomUUID();
+        Long ownerId = 10L;
+        Long editorId = 11L;
         Board board = boardWithOwner(boardId, "Shared Board", ownerId, TENANT_A);
         BoardMemberId memberId = new BoardMemberId(boardId, editorId);
         BoardMember member = new BoardMember(memberId, BoardRole.EDITOR, Instant.now());
@@ -289,8 +289,8 @@ class BoardServiceTest {
     @Test
     void findById_whenUserIsNeitherOwnerNorMember_throwsBoardNotFoundException() {
         UUID boardId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID strangerId = UUID.randomUUID();
+        Long ownerId = 20L;
+        Long strangerId = 21L;
         Board board = boardWithOwner(boardId, "Private Board", ownerId, TENANT_A);
         when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
         when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, strangerId))
@@ -328,8 +328,8 @@ class BoardServiceTest {
     @Test
     void rename_whenEditor_throwsBoardAccessDeniedException() {
         UUID boardId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID editorId = UUID.randomUUID();
+        Long ownerId = 30L;
+        Long editorId = 31L;
         Board board = boardWithOwner(boardId, "Title", ownerId, TENANT_A);
         BoardMemberId memberId = new BoardMemberId(boardId, editorId);
         BoardMember member = new BoardMember(memberId, BoardRole.EDITOR, Instant.now());
@@ -361,8 +361,8 @@ class BoardServiceTest {
     @Test
     void rename_whenNonMember_throwsBoardNotFoundException() {
         UUID boardId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID strangerId = UUID.randomUUID();
+        Long ownerId = 40L;
+        Long strangerId = 41L;
         Board board = boardWithOwner(boardId, "Title", ownerId, TENANT_A);
         when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
         when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, strangerId))
@@ -398,8 +398,8 @@ class BoardServiceTest {
     @Test
     void delete_whenViewer_throwsBoardAccessDeniedException() {
         UUID boardId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID viewerId = UUID.randomUUID();
+        Long ownerId = 50L;
+        Long viewerId = 51L;
         Board board = boardWithOwner(boardId, "Title", ownerId, TENANT_A);
         BoardMemberId memberId = new BoardMemberId(boardId, viewerId);
         BoardMember member = new BoardMember(memberId, BoardRole.VIEWER, Instant.now());
@@ -434,12 +434,12 @@ class BoardServiceTest {
      *
      * @param id       the UUID to assign to the board
      * @param title    the board title
-     * @param ownerId  the owner user UUID
-     * @param tenantId the tenant UUID
+     * @param ownerId  the owner user id
+     * @param tenantId the tenant id
      * @return a board with the specified id
      */
     private Board boardWithOwner(
-            final UUID id, final String title, final UUID ownerId, final UUID tenantId) {
+            final UUID id, final String title, final Long ownerId, final Long tenantId) {
         Instant now = Instant.now();
         Board board = new Board(title, tenantId, ownerId, now);
         try {

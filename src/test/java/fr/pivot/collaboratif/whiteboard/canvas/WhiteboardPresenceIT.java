@@ -1,5 +1,6 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
 import fr.pivot.collaboratif.whiteboard.board.Board;
 import fr.pivot.collaboratif.whiteboard.board.BoardMember;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
@@ -52,6 +53,14 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * verifies the fix: presence is driven exclusively by explicit JOIN/LEAVE, and a WebSocket
  * disconnect only clears presence when it was the user's <em>last</em> active session on the
  * board.
+ *
+ * <p>The WebSocket handshake itself is anonymous; connections authenticate on the STOMP
+ * {@code CONNECT} frame's native {@code Authorization} header, validated by {@code
+ * StompAuthenticationChannelInterceptor} (EN08.3). Tenants/users/tokens
+ * are seeded through {@link PlatformAuthTestSupport} — the {@code public.tenants}/{@code
+ * public.users} rows must exist before board/board-member rows are inserted since {@code
+ * board.tenant_id}/{@code owner_id} and {@code board_member.user_id} now carry FK constraints
+ * into those tables.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
@@ -67,17 +76,21 @@ class WhiteboardPresenceIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies Testcontainer-derived connection properties to the Spring context.
+     * Supplies Testcontainer-derived connection properties to the Spring context and seeds
+     * the {@code public} schema (owned by {@code pivot-core}) before the Spring context and
+     * its Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @LocalServerPort
@@ -113,11 +126,12 @@ class WhiteboardPresenceIT {
      */
     @Test
     void crash_without_leave_clears_presence_when_it_was_the_last_session() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long userId = seedUser(tenantId);
+        String token = issueToken(userId);
         Board board = createBoardWithOwner(tenantId, userId);
 
-        StompSession session = connectAs(userId, tenantId);
+        StompSession session = connectAs(token);
         List<ParticipantsUpdatePayload> updates = subscribeToPresenceUpdates(session, board.getId());
 
         // Brief pause so SimpleBroker registers the subscription before the JOIN below —
@@ -131,10 +145,11 @@ class WhiteboardPresenceIT {
 
         // Reconnect a second, independent session subscribed to the same topic so we can
         // observe the broadcast triggered by the first session's crash after it disconnects.
-        UUID observerId = UUID.randomUUID();
+        long observerId = seedUser(tenantId);
+        String observerToken = issueToken(observerId);
         boardMemberRepository.save(new BoardMember(
                 new BoardMemberId(board.getId(), observerId), BoardRole.VIEWER, Instant.now()));
-        StompSession observer = connectAs(observerId, tenantId);
+        StompSession observer = connectAs(observerToken);
         List<ParticipantsUpdatePayload> observedUpdates = subscribeToPresenceUpdates(observer, board.getId());
         Thread.sleep(100);
 
@@ -158,18 +173,19 @@ class WhiteboardPresenceIT {
      */
     @Test
     void multi_tab_one_session_crash_does_not_clear_presence() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long userId = seedUser(tenantId);
+        String token = issueToken(userId);
         Board board = createBoardWithOwner(tenantId, userId);
 
-        StompSession tab1 = connectAs(userId, tenantId);
+        StompSession tab1 = connectAs(token);
         List<ParticipantsUpdatePayload> tab1Updates = subscribeToPresenceUpdates(tab1, board.getId());
         Thread.sleep(100);
         joinBoard(tab1, board.getId(), "Alice (tab 1)");
         awaitAtLeast(tab1Updates, 1);
         assertThat(tab1Updates.get(0).participants()).hasSize(1);
 
-        StompSession tab2 = connectAs(userId, tenantId);
+        StompSession tab2 = connectAs(token);
         joinBoard(tab2, board.getId(), "Alice (tab 2)");
 
         // Wait for tab2's own JOIN to be fully processed server-side (including registering
@@ -180,10 +196,11 @@ class WhiteboardPresenceIT {
         awaitAtLeast(tab1Updates, 2);
 
         // Independent observer to see whether a PARTICIPANTS_UPDATE fires after tab1 crashes.
-        UUID observerId = UUID.randomUUID();
+        long observerId = seedUser(tenantId);
+        String observerToken = issueToken(observerId);
         boardMemberRepository.save(new BoardMember(
                 new BoardMemberId(board.getId(), observerId), BoardRole.VIEWER, Instant.now()));
-        StompSession observer = connectAs(observerId, tenantId);
+        StompSession observer = connectAs(observerToken);
         List<ParticipantsUpdatePayload> observedUpdates = subscribeToPresenceUpdates(observer, board.getId());
         Thread.sleep(100);
 
@@ -214,17 +231,19 @@ class WhiteboardPresenceIT {
      */
     @Test
     void non_member_subscribe_to_presence_subtopic_is_denied() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID nonMemberId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        long nonMemberId = seedUser(tenantId);
+        String ownerToken = issueToken(ownerId);
+        String nonMemberToken = issueToken(nonMemberId);
         Board board = createBoardWithOwner(tenantId, ownerId);
 
-        StompSession nonMemberSession = connectAs(nonMemberId, tenantId);
+        StompSession nonMemberSession = connectAs(nonMemberToken);
         List<ParticipantsUpdatePayload> updates = subscribeToPresenceUpdates(nonMemberSession, board.getId());
 
         Thread.sleep(200);
 
-        StompSession ownerSession = connectAs(ownerId, tenantId);
+        StompSession ownerSession = connectAs(ownerToken);
         joinBoard(ownerSession, board.getId(), "Owner");
 
         assertThatExceptionOfType(TimeoutException.class)
@@ -242,18 +261,20 @@ class WhiteboardPresenceIT {
      */
     @Test
     void joiner_receives_full_current_list_on_non_empty_board() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID secondUserId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        long secondUserId = seedUser(tenantId);
+        String ownerToken = issueToken(ownerId);
+        String secondUserToken = issueToken(secondUserId);
         Board board = createBoardWithOwner(tenantId, ownerId);
         boardMemberRepository.save(new BoardMember(
                 new BoardMemberId(board.getId(), secondUserId), BoardRole.EDITOR, Instant.now()));
 
-        StompSession ownerSession = connectAs(ownerId, tenantId);
+        StompSession ownerSession = connectAs(ownerToken);
         joinBoard(ownerSession, board.getId(), "Alice");
         Thread.sleep(200);
 
-        StompSession secondSession = connectAs(secondUserId, tenantId);
+        StompSession secondSession = connectAs(secondUserToken);
         List<ParticipantsUpdatePayload> updates = subscribeToPresenceUpdates(secondSession, board.getId());
         Thread.sleep(100);
         joinBoard(secondSession, board.getId(), "Bob");
@@ -261,7 +282,7 @@ class WhiteboardPresenceIT {
         awaitAtLeast(updates, 1);
         assertThat(updates.get(0).participants()).hasSize(2)
                 .extracting(p -> p.userId())
-                .containsExactlyInAnyOrder(ownerId.toString(), secondUserId.toString());
+                .containsExactlyInAnyOrder(String.valueOf(ownerId), String.valueOf(secondUserId));
     }
 
     // =========================================================================
@@ -277,11 +298,12 @@ class WhiteboardPresenceIT {
      */
     @Test
     void duplicate_join_from_same_user_dedups_with_stable_color() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long userId = seedUser(tenantId);
+        String token = issueToken(userId);
         Board board = createBoardWithOwner(tenantId, userId);
 
-        StompSession tab1 = connectAs(userId, tenantId);
+        StompSession tab1 = connectAs(token);
         List<ParticipantsUpdatePayload> updates = subscribeToPresenceUpdates(tab1, board.getId());
         Thread.sleep(100);
         joinBoard(tab1, board.getId(), "Alice-Tab1");
@@ -289,14 +311,14 @@ class WhiteboardPresenceIT {
         assertThat(updates.get(0).participants()).hasSize(1);
         String colorAfterFirstJoin = updates.get(0).participants().get(0).color();
 
-        StompSession tab2 = connectAs(userId, tenantId);
+        StompSession tab2 = connectAs(token);
         joinBoard(tab2, board.getId(), "Alice-Tab2");
         awaitAtLeast(updates, 2);
 
         ParticipantsUpdatePayload afterSecondJoin = updates.get(updates.size() - 1);
         assertThat(afterSecondJoin.participants()).hasSize(1);
         ParticipantInfo participant = afterSecondJoin.participants().get(0);
-        assertThat(participant.userId()).isEqualTo(userId.toString());
+        assertThat(participant.userId()).isEqualTo(String.valueOf(userId));
         assertThat(participant.displayName()).isEqualTo("Alice-Tab2");
         assertThat(participant.color()).isEqualTo(colorAfterFirstJoin);
     }
@@ -314,11 +336,12 @@ class WhiteboardPresenceIT {
      */
     @Test
     void participants_update_never_exposes_email_or_other_profile_data() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
         Board board = createBoardWithOwner(tenantId, ownerId);
 
-        StompSession session = connectAs(ownerId, tenantId);
+        StompSession session = connectAs(token);
         List<ParticipantsUpdatePayload> updates = subscribeToPresenceUpdates(session, board.getId());
         Thread.sleep(100);
         joinBoard(session, board.getId(), "Alice");
@@ -326,7 +349,7 @@ class WhiteboardPresenceIT {
         awaitAtLeast(updates, 1);
         assertThat(updates.get(0).participants()).hasSize(1);
         ParticipantInfo participant = updates.get(0).participants().get(0);
-        assertThat(participant.userId()).isEqualTo(ownerId.toString());
+        assertThat(participant.userId()).isEqualTo(String.valueOf(ownerId));
         assertThat(participant.displayName()).isEqualTo("Alice");
         assertThat(participant.role()).isEqualTo("OWNER");
         assertThat(participant.color()).startsWith("#");
@@ -340,22 +363,23 @@ class WhiteboardPresenceIT {
     // =========================================================================
 
     /**
-     * Establishes a STOMP connection with the given identity headers.
+     * Connects to the WebSocket endpoint using the given bearer token on the STOMP
+     * {@code CONNECT} frame's native {@code Authorization} header, blocking until the STOMP
+     * session is established or timing out after 5 seconds.
      *
-     * @param userId   the user UUID
-     * @param tenantId the tenant UUID
+     * @param rawToken the raw bearer token to send as {@code Authorization: Bearer <token>} on
+     *                 the CONNECT frame
      * @return an open STOMP session
      */
-    private StompSession connectAs(final UUID userId, final UUID tenantId) throws Exception {
+    private StompSession connectAs(final String rawToken) throws Exception {
         WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
         client.setMessageConverter(new JacksonJsonMessageConverter());
 
-        WebSocketHttpHeaders httpHeaders = new WebSocketHttpHeaders();
-        httpHeaders.add("X-Pivot-User-Id", userId.toString());
-        httpHeaders.add("X-Pivot-Tenant-Id", tenantId.toString());
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + rawToken);
 
         String url = "ws://localhost:" + port + "/api/collaboratif/ws/whiteboard";
-        StompSession session = client.connectAsync(url, httpHeaders,
+        StompSession session = client.connectAsync(url, new WebSocketHttpHeaders(), connectHeaders,
                 new StompSessionHandlerAdapter() {
                 }).get(5, TimeUnit.SECONDS);
         openSessions.add(session);
@@ -439,15 +463,51 @@ class WhiteboardPresenceIT {
      * Creates a board owned by the given user within the given tenant and persists both
      * the board and the OWNER membership record.
      *
-     * @param tenantId the tenant UUID
-     * @param ownerId  the user UUID that will be the OWNER
+     * @param tenantId the tenant's {@code public.tenants.id}
+     * @param ownerId  the owning user's {@code public.users.id}
      * @return the persisted {@link Board}
      */
-    private Board createBoardWithOwner(final UUID tenantId, final UUID ownerId) {
+    private Board createBoardWithOwner(final long tenantId, final long ownerId) {
         Instant now = Instant.now();
         Board board = boardRepository.save(new Board("Test Board", tenantId, ownerId, now));
         boardMemberRepository.save(
                 new BoardMember(new BoardMemberId(board.getId(), ownerId), BoardRole.OWNER, now));
         return board;
+    }
+
+    /**
+     * Seeds a tenant row in {@code public.tenants}.
+     *
+     * @return the generated tenant id
+     * @throws Exception if the insert fails
+     */
+    private long seedTenant() throws Exception {
+        return PlatformAuthTestSupport.seedTenant(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), null);
+    }
+
+    /**
+     * Seeds an active user row in {@code public.users} belonging to the given tenant.
+     *
+     * @param tenantId the owning tenant's id
+     * @return the generated user id
+     * @throws Exception if the insert fails
+     */
+    private long seedUser(final long tenantId) throws Exception {
+        return PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantId, true);
+    }
+
+    /**
+     * Issues a valid, non-expired {@code active} bearer token for the given user.
+     *
+     * @param userId the owning user's id
+     * @return the raw bearer token
+     * @throws Exception if the insert fails
+     */
+    private String issueToken(final long userId) throws Exception {
+        return PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                userId, "active", Instant.now().plusSeconds(3600));
     }
 }

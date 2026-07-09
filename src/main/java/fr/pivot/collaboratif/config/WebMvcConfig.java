@@ -12,10 +12,21 @@ import java.util.List;
  *
  * <p>Registers the {@link RequestPrincipalResolver} so that controller methods
  * can declare a {@code RequestPrincipal} parameter that is resolved automatically
- * from the incoming HTTP request headers.
+ * from the validated {@code Authorization: Bearer} token (EN08.3).
  */
 @Configuration
 public class WebMvcConfig implements WebMvcConfigurer {
+
+    private final RequestPrincipalResolver requestPrincipalResolver;
+
+    /**
+     * Constructs the configuration with the shared {@link RequestPrincipalResolver} bean.
+     *
+     * @param requestPrincipalResolver the argument resolver to register
+     */
+    public WebMvcConfig(final RequestPrincipalResolver requestPrincipalResolver) {
+        this.requestPrincipalResolver = requestPrincipalResolver;
+    }
 
     /**
      * Registers custom argument resolvers.
@@ -24,6 +35,6 @@ public class WebMvcConfig implements WebMvcConfigurer {
      */
     @Override
     public void addArgumentResolvers(final List<HandlerMethodArgumentResolver> resolvers) {
-        resolvers.add(new RequestPrincipalResolver());
+        resolvers.add(requestPrincipalResolver);
     }
 }

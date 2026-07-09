@@ -43,11 +43,11 @@ public class CanvasEvent {
 
     /** Tenant owning this board — stored for tenant-scoped history queries. */
     @Column(name = "tenant_id", nullable = false, updatable = false)
-    private UUID tenantId;
+    private Long tenantId;
 
     /** User who emitted this event. */
     @Column(name = "user_id", nullable = false, updatable = false)
-    private UUID userId;
+    private Long userId;
 
     /** Canvas event type (only DRAW persisted in the Socle). */
     @Enumerated(EnumType.STRING)
@@ -81,8 +81,8 @@ public class CanvasEvent {
      *
      * @param id        server-generated UUID
      * @param boardId   the board UUID
-     * @param tenantId  the tenant UUID
-     * @param userId    the emitting user UUID
+     * @param tenantId  the tenant's {@code public.tenants.id}
+     * @param userId    the emitting user's {@code public.users.id}
      * @param eventType the canvas event type
      * @param payload   JSON payload string (may be {@code null} for non-DRAW types)
      * @param createdAt server-side creation timestamp
@@ -90,8 +90,8 @@ public class CanvasEvent {
     public CanvasEvent(
             final UUID id,
             final UUID boardId,
-            final UUID tenantId,
-            final UUID userId,
+            final Long tenantId,
+            final Long userId,
             final CanvasEventType eventType,
             final String payload,
             final OffsetDateTime createdAt) {
@@ -123,20 +123,20 @@ public class CanvasEvent {
     }
 
     /**
-     * Returns the tenant UUID.
+     * Returns the tenant identifier.
      *
-     * @return the tenant UUID
+     * @return the tenant's {@code public.tenants.id}
      */
-    public UUID getTenantId() {
+    public Long getTenantId() {
         return tenantId;
     }
 
     /**
-     * Returns the user UUID.
+     * Returns the user identifier.
      *
-     * @return the user UUID
+     * @return the user's {@code public.users.id}
      */
-    public UUID getUserId() {
+    public Long getUserId() {
         return userId;
     }
 

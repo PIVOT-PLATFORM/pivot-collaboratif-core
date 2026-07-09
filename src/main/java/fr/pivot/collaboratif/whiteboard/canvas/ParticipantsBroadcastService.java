@@ -48,10 +48,10 @@ public class ParticipantsBroadcastService {
      * Broadcasts a {@code PARTICIPANTS_UPDATE} with the current full participant list to
      * the board's presence topic.
      *
-     * @param tenantId the tenant UUID
+     * @param tenantId the tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
      */
-    public void broadcast(final UUID tenantId, final UUID boardId) {
+    public void broadcast(final Long tenantId, final UUID boardId) {
         List<ParticipantInfo> participants = participantMetaStore.getAll(tenantId, boardId);
         String destination = BOARD_TOPIC_PREFIX + boardId + PRESENCE_SUFFIX;
         messagingTemplate.convertAndSend(destination, new ParticipantsUpdatePayload(participants));

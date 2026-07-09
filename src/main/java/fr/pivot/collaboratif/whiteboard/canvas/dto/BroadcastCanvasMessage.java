@@ -12,7 +12,7 @@ import java.util.Map;
  *
  * @param type    the canvas event type
  * @param boardId the board UUID as a string (allows clients to route without parsing)
- * @param userId  the emitting user's UUID as a string
+ * @param userId  the emitting user's {@code public.users.id} as a string
  * @param data    type-specific payload; the exact fields depend on {@code type}
  */
 public record BroadcastCanvasMessage(

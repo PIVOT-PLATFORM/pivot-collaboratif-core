@@ -26,6 +26,10 @@
 		<!-- JaCoCo 0.8.13 + SpotBugs ASM 9.7 support class 68 max; revert when tools add Java 25 support -->
 		<maven.compiler.release>24</maven.compiler.release>
 		<testcontainers.version>1.21.4</testcontainers.version>
+		<!-- CVE-2026-10532 (LOW, logback-core deserialization) — fixed upstream in 1.5.35,
+		     spring-boot-starter-parent 4.1.0 still manages 1.5.34. Override until the parent
+		     bumps (same fix as pivot-core#208). -->
+		<logback.version>1.5.35</logback.version>
 		<!-- Build reproductible : timestamp d'entrées d'archive figé → même source = même
 		     digest de JAR. Sous-tend la vérification de digest sur reprise (release.yml). -->
 		<project.build.outputTimestamp>2026-07-06T22:42:59Z</project.build.outputTimestamp>
@@ -44,17 +48,27 @@
 	</dependencyManagement>
 
 	<!--
-	  fr.pivot:pivot-core-starter — PAS ENCORE AJOUTÉ.
-	  pivot-core ne publie aujourd'hui aucun artefact sous ce nom : son pom.xml publie
-	  `fr.pivot:pivot-core` (l'application shell complète, version alignée sur pivot-core lui-même),
-	  pas une bibliothèque "starter" séparée avec les seuls packages fr.pivot.core.* (auth, tenant,
-	  team, modules, db). Tant que ce starter n'existe pas comme artefact publiable et versionné
-	  indépendamment, toute dépendance ici serait une coordonnée Maven fictive. Voir CLAUDE.md
-	  (section "Dépendance pivot-core-starter — état réel") et E30/E17 dans pivot-docs.
-	  → Sécurité (opaque tokens, TenantContext) et intégration module registry : différées jusqu'à
-	  publication réelle de ce starter (EN17.x).
+	  fr.pivot:pivot-core-starter — publié réellement à partir de la version 0.27.0 (EN17.1,
+	  pivot-core#171/#173/#176/#177/#180, ADR-022). Expose fr.pivot.core.auth.AuthenticatedPrincipal
+	  et AuthenticatedPrincipalResolver — le contrat minimal d'identité consommé par EN08.3 pour
+	  remplacer les headers X-Pivot-User-Id/X-Pivot-Tenant-Id non authentifiés. Version épinglée
+	  explicitement, jamais devinée (voir CLAUDE.md).
+
+	  Épinglé à 0.27.1 (pas 0.27.0) : 0.27.0 déclarait un <parent>fr.pivot:pivot-core:0.27.0</parent>
+	  jamais publié comme POM d'agrégateur racine sur GitHub Packages (seuls les JAR des sous-modules
+	  starter/app y étaient déployés), rendant la résolution de dépendance impossible pour tout
+	  consommateur externe — confirmé en CI sur ce repo (fr.pivot:pivot-core:pom:0.27.0 absent).
+	  0.27.1 corrige à la fois la publication du POM racine et le suivi de version du parent des
+	  sous-modules (semantic-release ne committait que le pom.xml racine, désynchronisant
+	  starter/app à 0.27.0 pendant que la racine passait à 0.27.1) — vérifié réel via l'API GitHub
+	  Packages avant ce bump.
 	-->
 	<dependencies>
+		<dependency>
+			<groupId>fr.pivot</groupId>
+			<artifactId>pivot-core-starter</artifactId>
+			<version>0.27.1</version>
+		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
@@ -130,6 +144,17 @@
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
+
+	<!-- Résolution de fr.pivot:pivot-core-starter (GitHub Packages du repo pivot-core, distinct
+	     du repo de publication de ce module — voir distributionManagement plus bas). Credentials
+	     résolues via le serveur Maven "pivot-core-packages" (.github/actions/setup-java). -->
+	<repositories>
+		<repository>
+			<id>pivot-core-packages</id>
+			<name>GitHub Packages — pivot-core</name>
+			<url>https://maven.pkg.github.com/PIVOT-PLATFORM/pivot-core</url>
+		</repository>
+	</repositories>
 
 	<build>
 		<plugins>

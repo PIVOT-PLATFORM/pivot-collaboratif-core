@@ -1,8 +1,8 @@
 package fr.pivot.collaboratif.config;
 
 import fr.pivot.collaboratif.whiteboard.ws.SessionTrackingHandlerDecoratorFactory;
+import fr.pivot.collaboratif.whiteboard.ws.StompAuthenticationChannelInterceptor;
 import fr.pivot.collaboratif.whiteboard.ws.StompHandshakeHandler;
-import fr.pivot.collaboratif.whiteboard.ws.StompHandshakeInterceptor;
 import fr.pivot.collaboratif.whiteboard.ws.WhiteboardChannelInterceptor;
 import jakarta.servlet.ServletContext;
 import jakarta.websocket.server.ServerContainer;
@@ -80,10 +80,22 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  * empirically). Renaming the whiteboard destinations to dot-hierarchy would fix this but is a
  * breaking change requiring coordination with {@code pivot-collaboratif-ui} — out of scope here.
  *
- * <p>The inbound channel is instrumented with {@link WhiteboardChannelInterceptor} which
- * enforces board membership on every SUBSCRIBE and SEND frame. The HTTP handshake is
- * guarded by {@link StompHandshakeInterceptor} and {@link StompHandshakeHandler} which
- * reject connections missing identity headers with HTTP 401.
+ * <p>Identity is established in two stages (EN08.3, ADR-022), deliberately <strong>after</strong>
+ * the WebSocket upgrade rather than as part of the HTTP handshake — a custom {@code Authorization}
+ * header cannot be set on a WebSocket handshake from browser JavaScript, and a token in the
+ * handshake URL is unacceptable exposure (access/proxy logs, browser history):
+ * <ol>
+ *   <li>{@link StompHandshakeHandler} assigns no identity at all during the HTTP upgrade — the
+ *       session starts anonymous.</li>
+ *   <li>{@link StompAuthenticationChannelInterceptor}, registered first on the client inbound
+ *       channel (see {@link #configureClientInboundChannel}), authenticates the bearer token
+ *       carried as a native header on the first STOMP frame ({@code CONNECT}) and establishes
+ *       the real {@link fr.pivot.collaboratif.whiteboard.ws.StompPrincipal} for the rest of the
+ *       session — see that class's JavaDoc for the full rationale and the design history it
+ *       replaced.</li>
+ * </ol>
+ * {@link WhiteboardChannelInterceptor}, registered second, then enforces board membership on
+ * every SUBSCRIBE and SEND frame using that established principal.
  *
  * <p>Payload size is capped at 64 KB per frame as required by EN08.1 — enforced at
  * <strong>two</strong> levels, both required for the US08.3.1 AC ("payload &gt; limite → STOMP
@@ -133,6 +145,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      */
     static final String DOMAIN_RELAY_PREFIX = "/topic/collaboratif.";
 
+    private final StompAuthenticationChannelInterceptor stompAuthenticationChannelInterceptor;
     private final WhiteboardChannelInterceptor whiteboardChannelInterceptor;
     private final SessionTrackingHandlerDecoratorFactory sessionTrackingHandlerDecoratorFactory;
     private final String allowedOrigins;
@@ -143,6 +156,10 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     /**
      * Creates the WebSocket configuration.
      *
+     * @param stompAuthenticationChannelInterceptor  the STOMP frame interceptor that
+     *                                                authenticates the CONNECT frame's bearer
+     *                                                token (EN08.3, ADR-022) — registered before
+     *                                                {@code whiteboardChannelInterceptor}
      * @param whiteboardChannelInterceptor           the STOMP frame interceptor for board
      *                                                authorization
      * @param sessionTrackingHandlerDecoratorFactory decorator factory that feeds
@@ -161,12 +178,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
      *                                                (EN07.3)
      */
     public WebSocketConfig(
+            final StompAuthenticationChannelInterceptor stompAuthenticationChannelInterceptor,
             final WhiteboardChannelInterceptor whiteboardChannelInterceptor,
             final SessionTrackingHandlerDecoratorFactory sessionTrackingHandlerDecoratorFactory,
             @Value("${pivot.cors.allowed-origins:*}") final String allowedOrigins,
             @Value("${pivot.activemq.relay-enabled:true}") final boolean activemqRelayEnabled,
             @Value("${pivot.activemq.relay-host}") final String activemqRelayHost,
             @Value("${pivot.activemq.relay-port}") final int activemqRelayPort) {
+        this.stompAuthenticationChannelInterceptor = stompAuthenticationChannelInterceptor;
         this.whiteboardChannelInterceptor = whiteboardChannelInterceptor;
         this.sessionTrackingHandlerDecoratorFactory = sessionTrackingHandlerDecoratorFactory;
         this.allowedOrigins = allowedOrigins;
@@ -217,8 +236,9 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     }
 
     /**
-     * Registers the STOMP WebSocket endpoint with the identity-enforcing handshake handler
-     * and interceptor.
+     * Registers the STOMP WebSocket endpoint with the (deliberately anonymous, see class
+     * JavaDoc) handshake handler — no {@code HandshakeInterceptor} is needed here anymore since
+     * authentication moved to the STOMP CONNECT frame ({@link StompAuthenticationChannelInterceptor}).
      *
      * @param registry the STOMP endpoint registry
      */
@@ -227,7 +247,6 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         String[] origins = allowedOrigins.split(",");
         registry.addEndpoint("/ws/whiteboard")
                 .setHandshakeHandler(new StompHandshakeHandler())
-                .addInterceptors(new StompHandshakeInterceptor())
                 .setAllowedOriginPatterns(origins);
     }
 
@@ -245,14 +264,17 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     }
 
     /**
-     * Registers the {@link WhiteboardChannelInterceptor} on the client inbound channel so
-     * that every SUBSCRIBE and SEND frame is authorised before reaching the broker.
+     * Registers {@link StompAuthenticationChannelInterceptor} and {@link
+     * WhiteboardChannelInterceptor} on the client inbound channel, in that order — {@code
+     * ChannelInterceptor}s run in registration order, and authentication (CONNECT) must
+     * establish the session's {@link fr.pivot.collaboratif.whiteboard.ws.StompPrincipal} before
+     * authorization (SUBSCRIBE/SEND) can rely on it.
      *
      * @param registration the inbound channel registration
      */
     @Override
     public void configureClientInboundChannel(final ChannelRegistration registration) {
-        registration.interceptors(whiteboardChannelInterceptor);
+        registration.interceptors(stompAuthenticationChannelInterceptor, whiteboardChannelInterceptor);
     }
 
     /**

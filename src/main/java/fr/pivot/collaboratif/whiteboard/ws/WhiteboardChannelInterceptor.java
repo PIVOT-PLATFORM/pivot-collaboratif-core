@@ -20,6 +20,8 @@ import org.springframework.web.socket.CloseStatus;
 import java.security.Principal;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * STOMP channel interceptor that enforces board access control on every inbound frame.
@@ -81,6 +83,22 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
 
     /** Strike counter TTL — resets automatically after 60 s of clean traffic. */
     private static final Duration STRIKES_TTL = Duration.ofSeconds(60);
+
+    /**
+     * Grace delay between delivering the closure notification and actually closing the
+     * transport connection.
+     *
+     * <p>{@link SimpMessagingTemplate#convertAndSendToUser} only enqueues the STOMP MESSAGE
+     * frame onto the (async, executor-backed) {@code clientOutboundChannel} — it does not block
+     * until the frame is actually written to the client's socket. Closing the session
+     * synchronously right after used to race that async dispatch: under any real network/thread
+     * scheduling latency (empirically: never locally, reliably in CI) the transport could be
+     * torn down before the frame was flushed, so the client's connection dropped without ever
+     * receiving the "closed" notification it was supposed to react to — the AC still held
+     * (the session really does end up closed), but silently, which defeats the point of sending
+     * a reason at all. This delay gives the outbound dispatch a window to actually flush first.
+     */
+    private static final long CLOSE_GRACE_DELAY_MILLIS = 250L;
 
     private final MembershipCacheService membershipCacheService;
     private final StringRedisTemplate redisTemplate;
@@ -226,7 +244,10 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
                 resetStrikes(sessionId, principal.tenantId(), boardId, principal.userId());
                 sendError(accessor.getSessionId(), accessor.getUser(),
                         "Session closed after repeated rate limit violations — please reconnect");
-                sessionRegistry.close(sessionId, CloseStatus.POLICY_VIOLATION);
+                // Grace delay so the notification above actually reaches the client before the
+                // transport is torn down — see CLOSE_GRACE_DELAY_MILLIS javadoc.
+                CompletableFuture.delayedExecutor(CLOSE_GRACE_DELAY_MILLIS, TimeUnit.MILLISECONDS)
+                        .execute(() -> sessionRegistry.close(sessionId, CloseStatus.POLICY_VIOLATION));
             } else {
                 sendError(accessor.getSessionId(), accessor.getUser(),
                         "Rate limit exceeded (" + strikes + "/" + MAX_STRIKES + " violations)");
@@ -242,12 +263,12 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      * Checks whether the given user has exceeded the per-second rate limit using a
      * fixed-window Redis INCR counter with a 1-second TTL.
      *
-     * @param tenantId the user's tenant UUID
+     * @param tenantId the user's tenant's {@code public.tenants.id}
      * @param boardId  the board UUID
-     * @param userId   the user UUID
+     * @param userId   the user's {@code public.users.id}
      * @return {@code true} if the limit is exceeded; {@code false} otherwise
      */
-    private boolean isRateLimited(final UUID tenantId, final UUID boardId, final UUID userId) {
+    private boolean isRateLimited(final Long tenantId, final UUID boardId, final Long userId) {
         String key = RATE_KEY_PREFIX + tenantId + ":" + boardId + ":" + userId;
         Long count = redisTemplate.opsForValue().increment(key);
         if (Long.valueOf(1L).equals(count)) {
@@ -265,13 +286,13 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      * client receives an error and is expected to disconnect — see US08.3.1).
      *
      * @param sessionId the STOMP session ID (used as part of the key)
-     * @param tenantId  the tenant UUID
+     * @param tenantId  the tenant's {@code public.tenants.id}
      * @param boardId   the board UUID
-     * @param userId    the user UUID
+     * @param userId    the user's {@code public.users.id}
      * @return the current strike count after incrementing
      */
     private long incrementStrikes(
-            final String sessionId, final UUID tenantId, final UUID boardId, final UUID userId) {
+            final String sessionId, final Long tenantId, final UUID boardId, final Long userId) {
         String key = STRIKES_KEY_PREFIX + sessionId + ":" + tenantId + ":" + boardId + ":" + userId;
         Long count = redisTemplate.opsForValue().increment(key);
         if (Long.valueOf(1L).equals(count)) {
@@ -284,12 +305,12 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      * Resets the strike counter for the session after a successful (non-rate-limited) message.
      *
      * @param sessionId the STOMP session ID
-     * @param tenantId  the tenant UUID
+     * @param tenantId  the tenant's {@code public.tenants.id}
      * @param boardId   the board UUID
-     * @param userId    the user UUID
+     * @param userId    the user's {@code public.users.id}
      */
     private void resetStrikes(
-            final String sessionId, final UUID tenantId, final UUID boardId, final UUID userId) {
+            final String sessionId, final Long tenantId, final UUID boardId, final Long userId) {
         if (sessionId == null) {
             return;
         }

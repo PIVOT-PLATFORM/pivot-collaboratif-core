@@ -67,11 +67,12 @@ public class WhiteboardTemplateService {
     /**
      * Lists all global templates available in the gallery, ordered for display.
      *
-     * @param tenantId the calling tenant's UUID (used only for the module-activation check)
+     * @param tenantId the calling tenant's {@code public.tenants.id} (used only for the
+     *                 module-activation check)
      * @return the ordered list of template responses
      * @throws WhiteboardModuleDisabledException if the whiteboard module is inactive for the tenant
      */
-    public List<TemplateResponse> listGlobalTemplates(final UUID tenantId) {
+    public List<TemplateResponse> listGlobalTemplates(final Long tenantId) {
         if (!moduleCheck.isEnabled(tenantId)) {
             throw new WhiteboardModuleDisabledException(tenantId);
         }
@@ -111,15 +112,15 @@ public class WhiteboardTemplateService {
      *
      * @param template the already-resolved global template (see {@link #resolveGlobalTemplate})
      * @param boardId  the newly created board's UUID
-     * @param tenantId the owning tenant's UUID
-     * @param userId   the board creator's UUID, recorded as the emitting user
+     * @param tenantId the owning tenant's {@code public.tenants.id}
+     * @param userId   the board creator's {@code public.users.id}, recorded as the emitting user
      */
     @Transactional
     public void initializeBoard(
             final WhiteboardTemplate template,
             final UUID boardId,
-            final UUID tenantId,
-            final UUID userId) {
+            final Long tenantId,
+            final Long userId) {
         List<WhiteboardTemplateElement> elements =
                 templateElementRepository.findAllByTemplateIdOrderByDisplayOrderAsc(template.getId());
         OffsetDateTime base = OffsetDateTime.now();

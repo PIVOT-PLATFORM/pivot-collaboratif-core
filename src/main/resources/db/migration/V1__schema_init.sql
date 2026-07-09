@@ -6,11 +6,15 @@
 CREATE SCHEMA IF NOT EXISTS collaboratif;
 
 -- US08.1.1: board + board_member
+-- EN08.3: tenant_id/owner_id switch from UUID to BIGINT (real public.tenants.id/public.users.id
+-- platform identities, resolved from the validated bearer token — never UUID, cf. ADR-022).
+-- FK vers public.* : precedent ADR-022 (EN17.4), pas de ON DELETE CASCADE (public.users/
+-- public.tenants ne sont jamais supprimes en dur, modele de desactivation/soft-delete).
 CREATE TABLE IF NOT EXISTS collaboratif.board (
     id          UUID         NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     title       VARCHAR(100) NOT NULL,
-    tenant_id   UUID         NOT NULL,
-    owner_id    UUID         NOT NULL,
+    tenant_id   BIGINT       NOT NULL REFERENCES public.tenants(id),
+    owner_id    BIGINT       NOT NULL REFERENCES public.users(id),
     visibility  VARCHAR(20)  NOT NULL DEFAULT 'PRIVATE',
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
@@ -21,7 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_board_updated_at  ON collaboratif.board(updated_a
 
 CREATE TABLE IF NOT EXISTS collaboratif.board_member (
     board_id  UUID        NOT NULL REFERENCES collaboratif.board(id) ON DELETE CASCADE,
-    user_id   UUID        NOT NULL,
+    user_id   BIGINT      NOT NULL REFERENCES public.users(id),
     role      VARCHAR(20) NOT NULL,
     joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (board_id, user_id)
@@ -38,7 +42,7 @@ CREATE TABLE IF NOT EXISTS collaboratif.board_share_token (
     use_count   INTEGER      NOT NULL DEFAULT 0,
     expires_at  TIMESTAMPTZ  NOT NULL,
     revoked_at  TIMESTAMPTZ,
-    created_by  UUID         NOT NULL,
+    created_by  BIGINT       NOT NULL REFERENCES public.users(id),
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_share_token_board_id ON collaboratif.board_share_token(board_id);
@@ -48,8 +52,8 @@ CREATE INDEX IF NOT EXISTS idx_share_token_hash     ON collaboratif.board_share_
 CREATE TABLE IF NOT EXISTS collaboratif.canvas_event (
     id          UUID         NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     board_id    UUID         NOT NULL REFERENCES collaboratif.board(id) ON DELETE CASCADE,
-    tenant_id   UUID         NOT NULL,
-    user_id     UUID         NOT NULL,
+    tenant_id   BIGINT       NOT NULL REFERENCES public.tenants(id),
+    user_id     BIGINT       NOT NULL REFERENCES public.users(id),
     event_type  VARCHAR(20)  NOT NULL,
     payload     JSONB,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
@@ -64,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_canvas_event_board ON collaboratif.canvas_event(b
 -- US30.4.2 (phase-3) unlocks tenant-owned templates.
 CREATE TABLE IF NOT EXISTS collaboratif.whiteboard_template (
     id            UUID         NOT NULL PRIMARY KEY,
-    tenant_id     UUID,
+    tenant_id     BIGINT REFERENCES public.tenants(id),
     code          VARCHAR(50)  NOT NULL UNIQUE,
     name          VARCHAR(100) NOT NULL,
     description   VARCHAR(500),

@@ -13,9 +13,9 @@ public class BoardMemberNotFoundException extends RuntimeException {
      * Creates the exception for a specific board-user combination.
      *
      * @param boardId the board UUID
-     * @param userId  the user UUID
+     * @param userId  the user's {@code public.users.id}
      */
-    public BoardMemberNotFoundException(final UUID boardId, final UUID userId) {
+    public BoardMemberNotFoundException(final UUID boardId, final Long userId) {
         super("Member " + userId + " not found on board " + boardId);
     }
 }

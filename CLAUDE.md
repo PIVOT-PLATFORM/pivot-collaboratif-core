@@ -9,37 +9,35 @@ d'atelier), formulaire. Repo module dédié dans l'architecture multi-repo PIVOT
 F08.x/EN08.x — ex-`EPIC-whiteboard`/E08, fusionné dans E30 — garde sa propre `Phase: Socle` non
 verrouillée).
 
-**Statut actuel : bootstrap.** Ce repo ne contient qu'un squelette Spring Boot minimal (build,
-CI/CD, sécurité supply-chain) — **aucune feature métier n'est implémentée**. Le développement
-réel démarre au premier sprint qui cible ce module.
+**Statut actuel.** Le noyau whiteboard (F08.x/EN08.x) est implémenté : création/liste/
+renommage/suppression de tableaux, partage par lien avec rôles, canvas temps réel WebSocket
+STOMP, templates. 9+ PR de feature mergées depuis le bootstrap initial. L'authentification
+réelle (EN08.3) est branchée depuis `fr.pivot:pivot-core-starter` — voir section
+"Authentification" plus bas.
 
 Le frontend Angular associé est **pivot-collaboratif-ui**. Le backend shell (auth, tenant,
 équipes, registre modules) est **pivot-core**. La documentation générale et le backlog vivent
 dans **pivot-docs**.
 
-### Dépendance `pivot-core-starter` — état réel (lire avant toute implémentation)
+### Dépendance `pivot-core-starter` — état réel
 
-`pivot-core` **ne publie pas aujourd'hui** d'artefact `fr.pivot:pivot-core-starter`. Son
-`pom.xml` publie `fr.pivot:pivot-core` — l'application shell complète (`mvn deploy` du jar de
-l'app elle-même), pas une bibliothèque "starter" séparée exposant uniquement
-`fr.pivot.core.auth` / `fr.pivot.core.tenant` / `fr.pivot.core.team` / `fr.pivot.core.modules` /
-`fr.pivot.core.db`. Tant que ce starter n'existe pas comme artefact publiable et versionné
-indépendamment (`EN17.x`, backlog `pivot-docs`), **ce repo ne peut dépendre d'aucune coordonnée
-Maven `fr.pivot:pivot-core-starter`** — ce serait une dépendance fictive.
+`pivot-core` publie réellement `fr.pivot:pivot-core-starter` depuis la version **0.27.0**
+(EN17.1, `pivot-core#171`/`#173`/`#176`/`#177`/`#180`, ADR-022) sur GitHub Packages du repo
+`pivot-core`. Ce repo en dépend (`pom.xml`, version épinglée explicitement — jamais devinée) pour
+`fr.pivot.core.auth.AuthenticatedPrincipal`/`AuthenticatedPrincipalResolver`, consommé par
+`fr.pivot.collaboratif.auth.TokenValidationService` (EN08.3). **Épinglé à 0.27.1** : 0.27.0
+déclarait un `<parent>` (`fr.pivot:pivot-core:0.27.0`) jamais publié comme POM d'agrégateur
+racine sur GitHub Packages, rendant la résolution impossible pour tout consommateur externe —
+corrigé côté `pivot-core` en 0.27.1 (publication du POM racine + suivi de version cohérent entre
+la racine et ses sous-modules).
 
-Conséquences concrètes tant que ce gap n'est pas comblé :
-- **Pas de `spring-boot-starter-security` ni de validation des opaque tokens émis par
-  `pivot-core`** dans ce repo — la sécurité applicative (isolation tenant, `TenantContext`) ne
-  peut pas être branchée avant la publication réelle du starter.
-- **Pas d'implémentation de `PivotModule`** (interface du registre de modules) tant que le
-  contrat n'est pas consommable en dépendance.
-- Le module E30 lui-même liste ce pré-requis explicitement : *"Pré-requis EN17 : pivot-core-starter
-  + @pivot/ui-core publiés avant implémentation"*.
+Packages restants du starter (`fr.pivot.core.tenant`, `fr.pivot.core.team`,
+`fr.pivot.core.modules`, `fr.pivot.core.db`) : pas encore consommés ici — `PivotModule` et le
+registre de modules restent à implémenter quand une US le spécifie explicitement.
 
-**Ne jamais ajouter une dépendance `fr.pivot:pivot-core-starter` avec une version devinée.**
-Vérifier l'état de publication (`pivot-core/pom.xml`, `pivot-core/.github/workflows/release.yml`)
-avant toute tentative, et signaler au mainteneur si une US du backlog suppose cette dépendance
-disponible alors qu'elle ne l'est pas.
+**Toujours épingler une version réelle et publiée** — vérifier l'état de publication
+(`pivot-core/pom.xml`, `pivot-core/.github/workflows/release.yml`) avant toute mise à jour de
+version, jamais une version devinée.
 
 ---
 
@@ -62,8 +60,8 @@ Concise et directe. Techniquement précise. Pas de récapitulatifs inutiles.
 | Backend | Java 25 · Spring Boot 4.x · Maven · `--release 24` (pas de preview features) |
 | BDD | PostgreSQL 18 (instance **partagée**, schéma dédié `collaboratif`) · Spring Data JPA · Flyway |
 | Cache | Redis (instance partagée avec les autres modules) |
-| Temps réel | WebSocket STOMP — **pas encore branché**. `pivot-core` n'a lui-même aucun `WebSocketConfig`/STOMP existant à ce jour (dépendance `spring-boot-starter-websocket` présente dans son `pom.xml` mais non configurée) : aucun pattern à répliquer. Cible production (voir `pivot-docs/docs/architecture/platform-overview.md`) : relai STOMP vers **ActiveMQ** (`:61613`), pas le `SimpleBroker` en mémoire — nécessaire pour la scalabilité multi-instance (isolation par room de board, `EN08.1`). À implémenter avec l'US qui l'exige, pas avant. |
-| Auth | **Différé** — dépend de `fr.pivot:pivot-core-starter` (voir section dédiée ci-dessus). Aucun `SecurityConfig` dans ce squelette. |
+| Temps réel | WebSocket STOMP — **branché** (`WebSocketConfig`, endpoint `/ws/whiteboard`) : `SimpleBroker` en mémoire pour `/topic/whiteboard/*` (isolation par room de board, `EN08.1`), présence, rate limiting (`US08.3.1`). EN07.3 ajoute un relai STOMP additif vers **ActiveMQ** (`:61613`, `/topic/collaboratif.*`) pour le futur bus d'événements inter-domaines — rien n'y publie encore. Handshake authentifié par bearer token (EN08.3, voir section "Authentification"). |
+| Auth | Bearer opaque token `pivot-core`, validé directement contre `public.access_tokens`/`users`/`tenants` via `fr.pivot:pivot-core-starter` (EN08.3, ADR-022 — validation dupliquée localement, jamais d'appel réseau). Voir section "Authentification" plus bas. |
 | Tests | JUnit 5 · Mockito · Testcontainers (PostgreSQL, Redis) |
 | Observabilité | Spring Actuator · Micrometer · Prometheus |
 | CI/CD | GitHub Actions · SonarCloud (à finaliser côté secrets, voir `TODO-SETUP.md`) · Semantic Release · Plumber |
@@ -103,7 +101,8 @@ la BETA).
 **Contexte HTTP :** `server.servlet.context-path: /api/collaboratif` — nginx route
 `/api/collaboratif/**` vers ce service **sans réécriture de chemin** (`proxy_pass` sans chemin
 final), le context-path doit donc reprendre exactement ce préfixe côté JVM. Idem WebSocket :
-`/ws/collaboratif/**` le jour où STOMP est branché.
+endpoint STOMP enregistré à `/ws/whiteboard` (`WebSocketConfig`), soit
+`/api/collaboratif/ws/whiteboard` en URL complète.
 
 Frontend Angular → **pivot-collaboratif-ui**. Documentation/backlog → **pivot-docs**. Shell
 auth/tenant/équipes → **pivot-core**.
@@ -496,12 +495,20 @@ public interface PivotModule {
 
 ---
 
-## Authentification (différée)
+## Authentification
 
-**Aucun mécanisme d'authentification n'est implémenté dans ce squelette.** Ce repo consommera
-la validation d'opaque tokens de `pivot-core` (SHA-256, TTL BDD, `TenantContext`) exclusivement
-via `fr.pivot:pivot-core-starter` une fois publié — **jamais de réimplémentation locale** d'un
-mécanisme d'auth propre à ce module (dérive d'architecture, cf. E17/E30).
+**Branchée (EN08.3).** `fr.pivot.collaboratif.context.RequestPrincipalResolver` extrait le
+bearer token du header `Authorization` (préfixe `Bearer ` insensible à la casse) et délègue à
+`fr.pivot.core.auth.AuthenticatedPrincipalResolver` (contrat `pivot-core-starter`), implémenté
+par `fr.pivot.collaboratif.auth.TokenValidationService` — validation dupliquée localement
+(SHA-256, expiration, révocation, désactivation tenant/utilisateur) directement contre
+`public.access_tokens`/`public.users`/`public.tenants`, jamais un appel réseau vers `pivot-core`
+(ADR-022). Remplace l'ancien mécanisme de stub à en-têtes `X-Pivot-User-Id`/`X-Pivot-Tenant-Id`
+non vérifiés. Toute requête sans token valide reçoit un 401 générique, sans fuite de la cause
+exacte (token inconnu/expiré/révoqué/tenant désactivé/utilisateur désactivé — indistinguable côté
+client). **Toujours étendre ce mécanisme, jamais de réimplémentation locale parallèle** (JWT,
+session maison) — l'algorithme de validation doit rester la duplication fidèle de celui de
+`pivot-core` (`fr.pivot.auth.service.TokenService#validate`).
 
 ---
 
@@ -527,14 +534,14 @@ Dans **pivot-docs** — un fichier par catégorie, mis à jour en place. **Jamai
 | Implémenter sans US tracée dans les fichiers markdown backlog | Perte de traçabilité |
 | Dépendance `fr.pivot:pivot-core-starter` avec version devinée | Coordonnée Maven fictive — vérifier l'état de publication avant toute tentative |
 | Réimplémentation locale d'un mécanisme d'auth (JWT, session maison) | Doit venir exclusivement de `pivot-core-starter` — dérive d'architecture |
-| `tenantId` extrait du body / header dans un endpoint (une fois l'auth branchée) | IDOR cross-tenant — extrait exclusivement du `TenantContext` du token porteur |
+| `tenantId` extrait du body / header dans un endpoint | IDOR cross-tenant — extrait exclusivement du `RequestPrincipal` résolu du token porteur |
 
 ---
 
-## Règle transversale sécurité — Isolation tenant (à activer avec `pivot-core-starter`)
+## Règle transversale sécurité — Isolation tenant
 
-**Tout endpoint `/api/collaboratif/*`, une fois l'authentification branchée :**
-- Extrait le `tenantId` **exclusivement** du `TenantContext` (injecté depuis le token porteur)
+**Tout endpoint `/api/collaboratif/*` :**
+- Extrait le `tenantId` **exclusivement** du `RequestPrincipal` résolu depuis le token porteur (EN08.3)
 - N'accepte **jamais** un `tenantId` ou `userId` venant du body JSON, d'un query param ou d'un header custom
 - Si `{boardId}`, `{sessionId}` ou `{formId}` dans le path → vérifier l'appartenance au tenant courant **avant** tout traitement
 - Appartenance invalide → **404** (pas 403 — ne pas confirmer l'existence de la ressource cross-tenant)

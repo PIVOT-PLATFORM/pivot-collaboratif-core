@@ -28,8 +28,8 @@ public interface CanvasEventRepository extends JpaRepository<CanvasEvent, UUID> 
      * production, and do not build replay behavior on top of it without that resolution.
      *
      * @param boardId  the board UUID
-     * @param tenantId the tenant UUID (for tenant isolation)
+     * @param tenantId the tenant's {@code public.tenants.id} (for tenant isolation)
      * @return ordered list of canvas events; empty if none exist
      */
-    List<CanvasEvent> findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(UUID boardId, UUID tenantId);
+    List<CanvasEvent> findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(UUID boardId, Long tenantId);
 }

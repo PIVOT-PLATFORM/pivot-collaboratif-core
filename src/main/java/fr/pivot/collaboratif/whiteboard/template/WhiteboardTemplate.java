@@ -33,7 +33,7 @@ public class WhiteboardTemplate {
 
     /** Owning tenant, or {@code null} for a global public template. */
     @Column(name = "tenant_id", updatable = false)
-    private UUID tenantId;
+    private Long tenantId;
 
     /** Stable machine-readable identifier (e.g. {@code "BRAINSTORM"}), used by the
      * frontend as an i18n key prefix ({@code whiteboard.template.<code>.*}). */
@@ -76,9 +76,9 @@ public class WhiteboardTemplate {
     /**
      * Returns the owning tenant, or {@code null} for a global public template.
      *
-     * @return the tenant UUID, or {@code null}
+     * @return the tenant's {@code public.tenants.id}, or {@code null}
      */
-    public UUID getTenantId() {
+    public Long getTenantId() {
         return tenantId;
     }
 

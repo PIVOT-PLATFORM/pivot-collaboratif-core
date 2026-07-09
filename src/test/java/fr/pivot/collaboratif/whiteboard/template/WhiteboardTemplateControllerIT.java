@@ -1,5 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.template;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport.AuthFixture;
 import fr.pivot.collaboratif.whiteboard.board.WhiteboardModuleCheck;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,8 +18,6 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-
-import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
@@ -51,17 +51,20 @@ class WhiteboardTemplateControllerIT {
 
     /**
      * Supplies container-derived datasource and Redis connection properties to the
-     * Spring context via dynamic property sources.
+     * Spring context via dynamic property sources, and seeds the {@code public} schema
+     * (owned by {@code pivot-core}) before the Spring context and its Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @Autowired
@@ -72,18 +75,24 @@ class WhiteboardTemplateControllerIT {
 
     private MockMvc mockMvc;
 
-    private static final UUID USER_A = UUID.randomUUID();
-    private static final UUID TENANT_A = UUID.randomUUID();
+    private long tenantA;
+    private String tokenA;
 
     /**
-     * Sets up MockMvc from the web application context before each test, and stubs the
-     * module-activation check to "enabled" by default — individual tests override this
+     * Sets up MockMvc from the web application context before each test, seeds a real
+     * tenant/user/token fixture (A) via {@link PlatformAuthTestSupport} (EN08.3), and stubs
+     * the module-activation check to "enabled" by default — individual tests override this
      * to exercise the disabled path.
      */
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         mockMvc = MockMvcBuilders.webAppContextSetup(wac).build();
         when(moduleCheck.isEnabled(any())).thenReturn(true);
+
+        AuthFixture fixtureA = PlatformAuthTestSupport.seedActiveUserWithToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        tenantA = fixtureA.tenantId();
+        tokenA = fixtureA.rawToken();
     }
 
     /**
@@ -93,8 +102,7 @@ class WhiteboardTemplateControllerIT {
     @Test
     void listTemplates_returnsTheThreeSeededGlobalTemplates() throws Exception {
         mockMvc.perform(get(BASE_PATH)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(3))
                 .andExpect(jsonPath("$[0].code").value("BRAINSTORM"))
@@ -106,7 +114,7 @@ class WhiteboardTemplateControllerIT {
     }
 
     /**
-     * Given the X-Pivot-User-Id and X-Pivot-Tenant-Id headers are absent,
+     * Given the Authorization bearer header is absent,
      * when GET /whiteboard/templates is called, then it returns HTTP 401 Unauthorized.
      */
     @Test
@@ -122,11 +130,10 @@ class WhiteboardTemplateControllerIT {
      */
     @Test
     void listTemplates_moduleDisabledForTenant_returns403() throws Exception {
-        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(false);
+        when(moduleCheck.isEnabled(tenantA)).thenReturn(false);
 
         mockMvc.perform(get(BASE_PATH)
-                        .header("X-Pivot-User-Id", USER_A)
-                        .header("X-Pivot-Tenant-Id", TENANT_A))
+                        .header("Authorization", "Bearer " + tokenA))
                 .andExpect(status().isForbidden());
     }
 }

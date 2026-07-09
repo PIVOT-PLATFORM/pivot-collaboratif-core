@@ -5,7 +5,6 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.util.UUID;
 
 /**
  * Redis-backed rate limiter for {@code POST /whiteboard/join}.
@@ -49,11 +48,11 @@ public class JoinRateLimitService {
      * the slight over-admission that can occur under extreme race conditions is acceptable
      * for a rate limiter protecting an invitation flow (not a financial transaction).
      *
-     * @param userId    the authenticated caller's UUID
+     * @param userId    the authenticated caller's {@code public.users.id}
      * @param clientIp  the client's IP address from the servlet request
      * @throws TooManyRequestsException if either per-user or per-IP limit is exceeded
      */
-    public void checkAndIncrement(final UUID userId, final String clientIp) {
+    public void checkAndIncrement(final Long userId, final String clientIp) {
         checkKey(PREFIX_USER + userId, "user");
         checkKey(PREFIX_IP + clientIp, "IP");
     }
@@ -61,9 +60,9 @@ public class JoinRateLimitService {
     /**
      * Resets the attempt counter for a specific user.
      *
-     * @param userId the authenticated caller's UUID
+     * @param userId the authenticated caller's {@code public.users.id}
      */
-    public void resetUser(final UUID userId) {
+    public void resetUser(final Long userId) {
         redis.delete(PREFIX_USER + userId);
     }
 

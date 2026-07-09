@@ -57,8 +57,8 @@ class WhiteboardTemplateServiceTest {
 
     private WhiteboardTemplateService templateService;
 
-    private static final UUID TENANT_A = UUID.randomUUID();
-    private static final UUID USER_A = UUID.randomUUID();
+    private static final Long TENANT_A = 100L;
+    private static final Long USER_A = 1L;
     private static final UUID BOARD_A = UUID.randomUUID();
 
     /** Initialises the service under test with mocked dependencies. */

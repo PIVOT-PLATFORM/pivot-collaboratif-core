@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -48,9 +49,9 @@ import static org.mockito.Mockito.when;
  */
 class WhiteboardChannelInterceptorTest {
 
-    private static final UUID TENANT_ID = UUID.randomUUID();
+    private static final Long TENANT_ID = 100L;
     private static final UUID BOARD_ID = UUID.randomUUID();
-    private static final UUID USER_ID = UUID.randomUUID();
+    private static final Long USER_ID = 1L;
     private static final String SESSION_ID = "session-1";
     private static final String DESTINATION = "/app/whiteboard/" + BOARD_ID + "/action";
     private static final String STRIKES_KEY =
@@ -119,7 +120,12 @@ class WhiteboardChannelInterceptorTest {
 
         sendFrame();
 
-        verify(sessionRegistry, times(1)).close(SESSION_ID, CloseStatus.POLICY_VIOLATION);
+        // The actual close is scheduled with a short grace delay (see
+        // WhiteboardChannelInterceptor.CLOSE_GRACE_DELAY_MILLIS) so the closure notification
+        // above has a chance to actually reach the client before the transport is torn down —
+        // verify with a timeout rather than asserting the interaction happened synchronously.
+        verify(sessionRegistry, timeout(1000).times(1))
+                .close(SESSION_ID, CloseStatus.POLICY_VIOLATION);
     }
 
     /**

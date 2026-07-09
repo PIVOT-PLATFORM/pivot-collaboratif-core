@@ -1,5 +1,6 @@
 package fr.pivot.collaboratif.whiteboard.ws;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
 import fr.pivot.collaboratif.whiteboard.board.Board;
 import fr.pivot.collaboratif.whiteboard.board.BoardMember;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
@@ -33,7 +34,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *
  * <p>Verifies that:
  * <ol>
- *   <li>A WebSocket connection without identity headers is rejected (HTTP 401).</li>
+ *   <li>A WebSocket connection without a bearer token is rejected (HTTP 401).</li>
  *   <li>A board member can subscribe to the board's STOMP topic and receives broadcasts
  *       sent to it.</li>
  *   <li>A non-member's SUBSCRIBE frame is silently dropped; they never receive a board
@@ -66,7 +66,14 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * longer represents "presence"; only an explicit JOIN application message does).
  *
  * <p>Uses {@link StandardWebSocketClient} (raw WebSocket, no SockJS) to connect to the
- * endpoint registered by {@link fr.pivot.collaboratif.config.WebSocketConfig}. Board and
+ * endpoint registered by {@link fr.pivot.collaboratif.config.WebSocketConfig}. The WebSocket
+ * upgrade itself carries no identity (anonymous handshake, see {@link StompHandshakeHandler});
+ * authentication happens on the first STOMP frame instead — the bearer token travels as a
+ * native {@code Authorization} header on the STOMP {@code CONNECT} frame, validated by {@link
+ * StompAuthenticationChannelInterceptor} (EN08.3). Tenants/users/tokens are seeded through {@link
+ * PlatformAuthTestSupport} — the {@code public.tenants}/{@code public.users} rows must exist
+ * before board/board-member rows are inserted since {@code board.tenant_id}/{@code owner_id}
+ * and {@code board_member.user_id} now carry FK constraints into those tables. Board and
  * member records are created directly via JPA repositories to avoid HTTP layer coupling.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -83,17 +90,21 @@ class WhiteboardWebSocketIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies Testcontainer-derived connection properties to the Spring context.
+     * Supplies Testcontainer-derived connection properties to the Spring context and seeds
+     * the {@code public} schema (owned by {@code pivot-core}) before the Spring context and
+     * its Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @LocalServerPort
@@ -124,12 +135,12 @@ class WhiteboardWebSocketIT {
     // -------------------------------------------------------------------------
 
     /**
-     * Given no identity headers,
-     * when the WebSocket upgrade is attempted,
-     * then the server rejects the handshake and the client future completes exceptionally.
+     * Given no Authorization header on the STOMP CONNECT frame,
+     * when a connection is attempted,
+     * then the server rejects the CONNECT and the client future completes exceptionally.
      */
     @Test
-    void handshake_without_identity_headers_is_rejected() {
+    void connect_without_bearer_token_is_rejected() {
         WebSocketStompClient client = createClient();
         CompletableFuture<StompSession> future = client.connectAsync(
                 wsUrl(),
@@ -152,11 +163,12 @@ class WhiteboardWebSocketIT {
      */
     @Test
     void board_member_can_subscribe_and_receives_broadcast() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long userId = seedUser(tenantId);
+        String token = issueToken(userId);
         Board board = createBoardWithOwner(tenantId, userId);
 
-        StompSession session = connectAs(userId, tenantId);
+        StompSession session = connectAs(token);
         CompletableFuture<BroadcastCanvasMessage> drawFuture = new CompletableFuture<>();
         session.subscribe("/topic/whiteboard/" + board.getId(),
                 framHandler(BroadcastCanvasMessage.class, drawFuture));
@@ -168,7 +180,7 @@ class WhiteboardWebSocketIT {
                 Map.of("type", "DRAW", "data", Map.of("type", "stroke")));
 
         BroadcastCanvasMessage msg = drawFuture.get(5, TimeUnit.SECONDS);
-        assertThat(msg.userId()).isEqualTo(userId.toString());
+        assertThat(msg.userId()).isEqualTo(String.valueOf(userId));
     }
 
     // -------------------------------------------------------------------------
@@ -183,19 +195,21 @@ class WhiteboardWebSocketIT {
      */
     @Test
     void non_member_subscribe_is_denied_and_never_receives_broadcast() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID nonMemberId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        long nonMemberId = seedUser(tenantId);
+        String ownerToken = issueToken(ownerId);
+        String nonMemberToken = issueToken(nonMemberId);
         Board board = createBoardWithOwner(tenantId, ownerId);
 
-        StompSession nonMemberSession = connectAs(nonMemberId, tenantId);
+        StompSession nonMemberSession = connectAs(nonMemberToken);
         CompletableFuture<BroadcastCanvasMessage> drawFuture = new CompletableFuture<>();
         nonMemberSession.subscribe("/topic/whiteboard/" + board.getId(),
                 framHandler(BroadcastCanvasMessage.class, drawFuture));
 
         Thread.sleep(200);
 
-        StompSession ownerSession = connectAs(ownerId, tenantId);
+        StompSession ownerSession = connectAs(ownerToken);
         ownerSession.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "DRAW", "data", Map.of("type", "stroke")));
 
@@ -214,14 +228,15 @@ class WhiteboardWebSocketIT {
      */
     @Test
     void cross_tenant_subscribe_is_denied() throws Exception {
-        UUID tenantT1 = UUID.randomUUID();
-        UUID ownerT1 = UUID.randomUUID();
+        long tenantT1 = seedTenant();
+        long ownerT1 = seedUser(tenantT1);
         Board board = createBoardWithOwner(tenantT1, ownerT1);
 
-        UUID tenantT2 = UUID.randomUUID();
-        UUID userT2 = UUID.randomUUID();
+        long tenantT2 = seedTenant();
+        long userT2 = seedUser(tenantT2);
+        String userT2Token = issueToken(userT2);
 
-        StompSession sessionT2 = connectAs(userT2, tenantT2);
+        StompSession sessionT2 = connectAs(userT2Token);
         CompletableFuture<BroadcastCanvasMessage> drawFuture = new CompletableFuture<>();
         sessionT2.subscribe("/topic/whiteboard/" + board.getId(),
                 framHandler(BroadcastCanvasMessage.class, drawFuture));
@@ -243,12 +258,14 @@ class WhiteboardWebSocketIT {
      */
     @Test
     void denied_subscribe_does_not_close_session() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long userId = seedUser(tenantId);
+        String token = issueToken(userId);
         Board board1 = createBoardWithOwner(tenantId, userId);
-        Board board2 = createBoardWithOwner(tenantId, UUID.randomUUID());
+        long otherOwnerId = seedUser(tenantId);
+        Board board2 = createBoardWithOwner(tenantId, otherOwnerId);
 
-        StompSession session = connectAs(userId, tenantId);
+        StompSession session = connectAs(token);
 
         CompletableFuture<BroadcastCanvasMessage> board1DrawFuture = new CompletableFuture<>();
         session.subscribe("/topic/whiteboard/" + board2.getId(), new NoopFrameHandler());
@@ -261,7 +278,7 @@ class WhiteboardWebSocketIT {
                 Map.of("type", "DRAW", "data", Map.of("type", "stroke")));
 
         BroadcastCanvasMessage msg = board1DrawFuture.get(5, TimeUnit.SECONDS);
-        assertThat(msg.userId()).isEqualTo(userId.toString());
+        assertThat(msg.userId()).isEqualTo(String.valueOf(userId));
         assertThat(session.isConnected()).isTrue();
     }
 
@@ -290,21 +307,22 @@ class WhiteboardWebSocketIT {
     }
 
     /**
-     * Connects to the WebSocket endpoint as the given user and tenant, blocking until
-     * the STOMP session is established or timing out after 5 seconds.
+     * Connects to the WebSocket endpoint using the given bearer token on the STOMP
+     * {@code CONNECT} frame's native {@code Authorization} header, blocking until the STOMP
+     * session is established or timing out after 5 seconds.
      *
-     * @param userId   the user UUID sent via {@code X-Pivot-User-Id}
-     * @param tenantId the tenant UUID sent via {@code X-Pivot-Tenant-Id}
+     * @param rawToken the raw bearer token to send as {@code Authorization: Bearer <token>} on
+     *                 the CONNECT frame
      * @return the established {@link StompSession}
      * @throws Exception if the connection fails or times out
      */
-    private StompSession connectAs(final UUID userId, final UUID tenantId) throws Exception {
-        WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
-        headers.add("X-Pivot-User-Id", userId.toString());
-        headers.add("X-Pivot-Tenant-Id", tenantId.toString());
+    private StompSession connectAs(final String rawToken) throws Exception {
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + rawToken);
         StompSession session = createClient()
-                .connectAsync(wsUrl(), headers, new StompSessionHandlerAdapter() {
-                })
+                .connectAsync(wsUrl(), new WebSocketHttpHeaders(), connectHeaders,
+                        new StompSessionHandlerAdapter() {
+                        })
                 .get(5, TimeUnit.SECONDS);
         openSessions.add(session);
         return session;
@@ -314,16 +332,52 @@ class WhiteboardWebSocketIT {
      * Creates a board owned by the given user within the given tenant and persists both
      * the board and the OWNER membership record.
      *
-     * @param tenantId the tenant UUID
-     * @param ownerId  the user UUID that will be the OWNER
+     * @param tenantId the tenant's {@code public.tenants.id}
+     * @param ownerId  the owning user's {@code public.users.id}
      * @return the persisted {@link Board}
      */
-    private Board createBoardWithOwner(final UUID tenantId, final UUID ownerId) {
+    private Board createBoardWithOwner(final long tenantId, final long ownerId) {
         Instant now = Instant.now();
         Board board = boardRepository.save(new Board("Test Board", tenantId, ownerId, now));
         boardMemberRepository.save(
                 new BoardMember(new BoardMemberId(board.getId(), ownerId), BoardRole.OWNER, now));
         return board;
+    }
+
+    /**
+     * Seeds a tenant row in {@code public.tenants}.
+     *
+     * @return the generated tenant id
+     * @throws Exception if the insert fails
+     */
+    private long seedTenant() throws Exception {
+        return PlatformAuthTestSupport.seedTenant(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), null);
+    }
+
+    /**
+     * Seeds an active user row in {@code public.users} belonging to the given tenant.
+     *
+     * @param tenantId the owning tenant's id
+     * @return the generated user id
+     * @throws Exception if the insert fails
+     */
+    private long seedUser(final long tenantId) throws Exception {
+        return PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantId, true);
+    }
+
+    /**
+     * Issues a valid, non-expired {@code active} bearer token for the given user.
+     *
+     * @param userId the owning user's id
+     * @return the raw bearer token
+     * @throws Exception if the insert fails
+     */
+    private String issueToken(final long userId) throws Exception {
+        return PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                userId, "active", Instant.now().plusSeconds(3600));
     }
 
     /**

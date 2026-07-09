@@ -20,7 +20,7 @@ import java.util.UUID;
  * @param role                   the caller's role on this board (lowercase)
  * @param createdAt              timestamp when the board was created
  * @param updatedAt              timestamp of the last board update
- * @param tenantId               tenant that owns this board
+ * @param tenantId               {@code public.tenants.id} of the tenant that owns this board
  * @param thumbnailUrl           URL of the board thumbnail image, or {@code null} in Socle
  * @param activeParticipantCount number of users currently active on the board
  */
@@ -30,7 +30,7 @@ public record BoardResponse(
         String role,
         Instant createdAt,
         Instant updatedAt,
-        UUID tenantId,
+        Long tenantId,
         String thumbnailUrl,
         int activeParticipantCount) {
 

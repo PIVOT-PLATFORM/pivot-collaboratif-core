@@ -19,7 +19,7 @@ public class BoardMemberId implements Serializable {
     private UUID boardId;
 
     /** The user part of the composite key. */
-    private UUID userId;
+    private Long userId;
 
     /** No-arg constructor required by JPA. */
     protected BoardMemberId() {
@@ -29,9 +29,9 @@ public class BoardMemberId implements Serializable {
      * Creates a composite key for the given board and user.
      *
      * @param boardId the board UUID
-     * @param userId  the user UUID
+     * @param userId  the user's {@code public.users.id}
      */
-    public BoardMemberId(final UUID boardId, final UUID userId) {
+    public BoardMemberId(final UUID boardId, final Long userId) {
         this.boardId = boardId;
         this.userId = userId;
     }
@@ -46,11 +46,11 @@ public class BoardMemberId implements Serializable {
     }
 
     /**
-     * Returns the user UUID.
+     * Returns the user identifier.
      *
-     * @return the userId
+     * @return the userId ({@code public.users.id})
      */
-    public UUID getUserId() {
+    public Long getUserId() {
         return userId;
     }
 
