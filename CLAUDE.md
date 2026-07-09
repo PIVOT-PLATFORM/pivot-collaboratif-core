@@ -175,7 +175,7 @@ Toute contribution mobilise les experts concernés — les mentionner explicitem
 |-------|---------|
 | Item Type | Epic / Feature / Enabler / US |
 | Parent | clé du parent (ex. `E30`, `F30.1`) |
-| Stage | Backlog / Ready / In progress / Review / Done |
+| Stage | ⬜ (pas encore terminé) / ✅ (Done — recette mainteneur). États intermédiaires internes, non persistés → pivot-docs/docs/backlog/README.md §2/§5 |
 | Priority | Critical / High / Medium / Low |
 | Module | `collaboratif` |
 | Phase | Socle / v1-enterprise / phase-3 |
@@ -219,7 +219,7 @@ Travail organisé par sprint. Référence : **`pivot-docs/docs/backlog/sprints/`
 **Principes :**
 - **Une branche par US / Enabler** — `feat/{us-id}-{slug}` (ex. `feat/us08-1-1-creer-tableau`)
 - **Agents en parallèle** — un agent par item du sprint, branches séparées
-- **Backlog pivot-docs** — mises à jour `Stage` dans le frontmatter US + `sprints/sprint-{N}.md`, committés sur la branche de l'US
+- **Backlog pivot-docs** — mises à jour `sprints/sprint-{N}.md` (état interne courant) ; le `Stage` du frontmatter US n'est modifié qu'à la création (`⬜`) et au passage `✅` (recette mainteneur), committés sur la branche de l'US
 - **Issue GitHub liée** — avant de démarrer un item, vérifier qu'une issue existe dans **ce repo** pour cet US/Enabler (recherche par id/titre). Absente → la créer (titre `{id} — {titre US}`, corps = lien vers le fichier backlog pivot-docs + AC). **Déjà assignée** (humain ou agent en cours) → item déjà pris, ne pas démarrer, passer au suivant. Sinon → se l'auto-assigner immédiatement (`gh issue edit {N} --add-assignee @me`) avant le premier commit — verrouille l'item, empêche qu'un autre agent ou une autre personne ne le reprenne en parallèle. Référencer l'issue dans la PR (`Closes #N`) — fermeture automatique à la fusion, jamais de fermeture manuelle en double.
 
 ## Workflow — Merge séquentiel autonome (plusieurs PR)
@@ -280,7 +280,7 @@ hors sprint (`fix/`, `refactor/`, `chore/`, `docs/`) — **sans exception** :
    - **Convergence** — Gate 4 ≥ 85 ET CI verte → sortir
 3. Gate 4 ≥ 85 :
    - Sortir la PR du mode draft (`gh pr ready`)
-   - `Stage: Review` dans frontmatter US + `sprints/sprint-{N}.md` (branche/PR dédiée `pivot-docs` — jamais de commit cross-repo)
+   - État interne Review consigné dans `sprints/sprint-{N}.md` (branche/PR dédiée `pivot-docs` — jamais de commit cross-repo) ; `Stage` frontmatter US reste `⬜`
    - **Gate 5** — générer/mettre à jour la spec fonctionnelle et technique figée `pivot-docs/docs/specs/E30/{us-id}-{slug}.md`
    - Signal mainteneur
 4. Blocage 20 boucles → Breaking Point 2
@@ -383,7 +383,7 @@ dans le champ **Stage** du frontmatter US (pivot-docs).
 
 | Gate | Moment | Seuils |
 |------|--------|--------|
-| **1 — READINESS** | Avant implémentation | PO Agent self-challenge · = 100 → Stage: Ready → procéder · < 100 → PO Agent réécrit ACs |
+| **1 — READINESS** | Avant implémentation | PO Agent self-challenge · = 100 → état interne Ready → procéder (Stage frontmatter reste ⬜) · < 100 → PO Agent réécrit ACs |
 | **2 — COVERAGE** | Par commit | ≥ 85 → continuer · 70–84 → compléter tests · < 70 → stop |
 | **3 — QUALITY** | Après CI verte | Hard blocks : secret Gitleaks, label `security`/`breaking-change`, modif contrat module/dépendance pivot-core |
 | **4 — MERGE CONFIDENCE** | Avant merge | ≥ 85 → merge autonome · 60–84 → merge documenté · < 60 → Breaking Point 2 |
@@ -447,7 +447,7 @@ AC ambigu à l'implémentation → **stopper et demander au PO Agent** — jamai
 ### Post-merge
 
 ```bash
-# 1. Mainteneur : passe Stage → Done dans le frontmatter US (recette humaine — jamais Claude)
+# 1. Mainteneur : passe Stage: ⬜ → ✅ dans le frontmatter US (recette humaine — jamais Claude)
 # 2. Débloquer les US dépendantes
 # 3. Nettoyer la branche
 git push origin --delete feat/{us-id}-{slug}
