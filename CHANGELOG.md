@@ -1,3 +1,10 @@
+## [0.1.2](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.1.1...v0.1.2) (2026-07-09)
+
+
+### Bug Fixes
+
+* **api:** add missing REST CORS config (Authorization header has no preflight support) ([#50](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/50)) ([0f2bad7](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/0f2bad767d3e415e755257aad25762d9ee89ac78))
+
 ## [0.1.1](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.1.0...v0.1.1) (2026-07-09)
 
 
