@@ -1,5 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.share;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport.AuthFixture;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +21,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,7 +36,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>Covers US08.2.1 acceptance criteria: generating share tokens (POST) and
  * revoking them (DELETE), including OWNER-only access control, role validation,
- * and 404 for unknown/revoked tokens.
+ * and 404 for unknown/revoked tokens. Each test authenticates via real bearer tokens
+ * issued for tenants/users seeded through {@link PlatformAuthTestSupport} (EN08.3) —
+ * tenant and user isolation is exercised with distinct seeded identities.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
@@ -51,17 +56,21 @@ class BoardShareControllerIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies container-derived connection properties to the Spring context.
+     * Supplies container-derived connection properties to the Spring context, and seeds
+     * the {@code public} schema (owned by {@code pivot-core}) before the Spring context
+     * and its Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @Autowired
@@ -70,26 +79,43 @@ class BoardShareControllerIT {
     private MockMvc mockMvc;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private static final UUID OWNER = UUID.randomUUID();
-    private static final UUID EDITOR = UUID.randomUUID();
-    private static final UUID TENANT = UUID.randomUUID();
-    private static final UUID OTHER_TENANT = UUID.randomUUID();
+    private String ownerToken;
+    private String editorToken;
+    private String otherTenantToken;
 
-    /** Sets up MockMvc before each test. */
+    /**
+     * Sets up MockMvc and seeds an OWNER + a fellow non-owner tenant member ("editor")
+     * plus a user belonging to an entirely separate tenant (for cross-tenant assertions)
+     * before each test.
+     */
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         mockMvc = MockMvcBuilders.webAppContextSetup(wac).build();
+
+        AuthFixture owner = PlatformAuthTestSupport.seedActiveUserWithToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        ownerToken = owner.rawToken();
+
+        long editorId = PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                owner.tenantId(), true);
+        editorToken = PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                editorId, "active", Instant.now().plusSeconds(3600));
+
+        AuthFixture otherTenant = PlatformAuthTestSupport.seedActiveUserWithToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        otherTenantToken = otherTenant.rawToken();
     }
 
     /**
-     * Helper: creates a board and returns its UUID string.
+     * Helper: creates a board via the API using the given caller's bearer token and
+     * returns its UUID string.
      */
-    private String createBoard(final UUID userId, final UUID tenantId, final String title)
-            throws Exception {
+    private String createBoard(final String token, final String title) throws Exception {
         MvcResult result = mockMvc.perform(
                         post(BOARDS_PATH)
-                                .header("X-Pivot-User-Id", userId)
-                                .header("X-Pivot-Tenant-Id", tenantId)
+                                .header("Authorization", "Bearer " + token)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"title\":\"" + title + "\"}"))
                 .andExpect(status().isCreated())
@@ -109,12 +135,11 @@ class BoardShareControllerIT {
      */
     @Test
     void generateToken_ownerEditor_returns201WithShareLink() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board A");
+        String boardId = createBoard(ownerToken, "Board A");
 
         MvcResult result = mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT)
+                                .header("Authorization", "Bearer " + ownerToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"role\":\"EDITOR\"}"))
                 .andExpect(status().isCreated())
@@ -137,12 +162,11 @@ class BoardShareControllerIT {
      */
     @Test
     void generateToken_viewerRoleWithOptions_returns201() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board B");
+        String boardId = createBoard(ownerToken, "Board B");
 
         mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT)
+                                .header("Authorization", "Bearer " + ownerToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"role\":\"VIEWER\",\"maxUses\":5,\"ttlDays\":14}"))
                 .andExpect(status().isCreated())
@@ -156,12 +180,11 @@ class BoardShareControllerIT {
      */
     @Test
     void generateToken_ownerRole_returns400InvalidRole() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board C");
+        String boardId = createBoard(ownerToken, "Board C");
 
         mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT)
+                                .header("Authorization", "Bearer " + ownerToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"role\":\"OWNER\"}"))
                 .andExpect(status().isBadRequest());
@@ -174,12 +197,11 @@ class BoardShareControllerIT {
      */
     @Test
     void generateToken_nonOwner_returns403() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board D");
+        String boardId = createBoard(ownerToken, "Board D");
 
         mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", EDITOR)
-                                .header("X-Pivot-Tenant-Id", TENANT)
+                                .header("Authorization", "Bearer " + editorToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"role\":\"EDITOR\"}"))
                 .andExpect(status().isForbidden());
@@ -192,12 +214,12 @@ class BoardShareControllerIT {
      */
     @Test
     void generateToken_crossTenant_returns404() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board E");
+        String boardId = createBoard(ownerToken, "Board E");
 
+        // otherTenantToken resolves to a user in a genuinely different tenant than the board's
         mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", OTHER_TENANT)
+                                .header("Authorization", "Bearer " + otherTenantToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"role\":\"EDITOR\"}"))
                 .andExpect(status().isNotFound());
@@ -210,12 +232,11 @@ class BoardShareControllerIT {
      */
     @Test
     void generateToken_nullRole_returns400() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board F");
+        String boardId = createBoard(ownerToken, "Board F");
 
         mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT)
+                                .header("Authorization", "Bearer " + ownerToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{}"))
                 .andExpect(status().isBadRequest());
@@ -232,12 +253,11 @@ class BoardShareControllerIT {
      */
     @Test
     void revokeToken_activeToken_returns204ThenReturns404OnRetry() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board G");
+        String boardId = createBoard(ownerToken, "Board G");
 
         MvcResult shareResult = mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT)
+                                .header("Authorization", "Bearer " + ownerToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"role\":\"EDITOR\"}"))
                 .andExpect(status().isCreated())
@@ -249,15 +269,13 @@ class BoardShareControllerIT {
         // First revocation → 204
         mockMvc.perform(
                         delete(BOARDS_PATH + "/" + boardId + "/share/" + tokenId)
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isNoContent());
 
         // Second revocation (already revoked) → 404
         mockMvc.perform(
                         delete(BOARDS_PATH + "/" + boardId + "/share/" + tokenId)
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isNotFound());
     }
 
@@ -268,12 +286,11 @@ class BoardShareControllerIT {
      */
     @Test
     void revokeToken_unknownToken_returns404() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board H");
+        String boardId = createBoard(ownerToken, "Board H");
 
         mockMvc.perform(
                         delete(BOARDS_PATH + "/" + boardId + "/share/" + UUID.randomUUID())
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isNotFound());
     }
 
@@ -284,13 +301,12 @@ class BoardShareControllerIT {
      */
     @Test
     void revokeToken_nonOwner_returns403() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board I");
+        String boardId = createBoard(ownerToken, "Board I");
         UUID someToken = UUID.randomUUID();
 
         mockMvc.perform(
                         delete(BOARDS_PATH + "/" + boardId + "/share/" + someToken)
-                                .header("X-Pivot-User-Id", EDITOR)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + editorToken))
                 .andExpect(status().isForbidden());
     }
 }

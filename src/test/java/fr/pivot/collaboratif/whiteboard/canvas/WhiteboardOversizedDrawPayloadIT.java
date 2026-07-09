@@ -1,5 +1,6 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
 import fr.pivot.collaboratif.whiteboard.board.Board;
 import fr.pivot.collaboratif.whiteboard.board.BoardMember;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
@@ -33,7 +34,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -50,6 +50,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * finding on PR #28) was any test proving the AC's actual observable behavior: that exceeding it
  * yields a STOMP ERROR frame rather than a silent drop or a hard disconnect, and — crucially —
  * that it does not take down other participants' sessions on the same board.
+ *
+ * <p>The WebSocket handshake is authenticated via a real {@code Authorization: Bearer <token>}
+ * header validated by {@code StompHandshakeInterceptor} (EN08.3), exactly like the REST layer.
+ * Tenants/users/tokens are seeded through {@link PlatformAuthTestSupport} — the
+ * {@code public.tenants}/{@code public.users} rows must exist before board/board-member rows are
+ * inserted since {@code board.tenant_id}/{@code owner_id} and {@code board_member.user_id} now
+ * carry FK constraints into those tables.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
@@ -65,17 +72,21 @@ class WhiteboardOversizedDrawPayloadIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies Testcontainer-derived connection properties to the Spring context.
+     * Supplies Testcontainer-derived connection properties to the Spring context and seeds
+     * the {@code public} schema (owned by {@code pivot-core}) before the Spring context and
+     * its Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @LocalServerPort
@@ -109,17 +120,19 @@ class WhiteboardOversizedDrawPayloadIT {
      */
     @Test
     void oversizedDrawPayloadYieldsStompErrorWithoutDisconnectingOtherParticipants() throws Exception {
-        UUID tenantId = UUID.randomUUID();
-        UUID ownerId = UUID.randomUUID();
-        UUID otherId = UUID.randomUUID();
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        long otherId = seedUser(tenantId);
+        String ownerToken = issueToken(ownerId);
+        String otherToken = issueToken(otherId);
         Board board = createBoardWithOwner(tenantId, ownerId);
         boardMemberRepository.save(new BoardMember(
                 new BoardMemberId(board.getId(), otherId), BoardRole.EDITOR, Instant.now()));
 
         CompletableFuture<String> errorFuture = new CompletableFuture<>();
-        StompSession sender = connectWithFrameCapture(ownerId, tenantId, errorFuture);
+        StompSession sender = connectWithFrameCapture(ownerToken, errorFuture);
 
-        StompSession bystander = connectWithFrameCapture(otherId, tenantId, new CompletableFuture<>());
+        StompSession bystander = connectWithFrameCapture(otherToken, new CompletableFuture<>());
         CompletableFuture<BroadcastCanvasMessage> bystanderBroadcast = new CompletableFuture<>();
         bystander.subscribe("/topic/whiteboard/" + board.getId(),
                 framHandler(BroadcastCanvasMessage.class, bystanderBroadcast));
@@ -156,23 +169,22 @@ class WhiteboardOversizedDrawPayloadIT {
     // =========================================================================
 
     /**
-     * Establishes a STOMP connection whose top-level session handler captures any STOMP ERROR
-     * frame sent to it (ERROR frames are delivered to the connection-level handler, never to a
-     * per-destination subscription handler).
+     * Establishes a STOMP connection, authenticated with the given bearer token on the
+     * handshake {@code Authorization} header, whose top-level session handler captures any
+     * STOMP ERROR frame sent to it (ERROR frames are delivered to the connection-level
+     * handler, never to a per-destination subscription handler).
      *
-     * @param userId      the user UUID
-     * @param tenantId    the tenant UUID
+     * @param rawToken    the raw bearer token to send as {@code Authorization: Bearer <token>}
      * @param errorFuture completed with the ERROR frame body the first time one is received
      * @return an open STOMP session
      */
     private StompSession connectWithFrameCapture(
-            final UUID userId, final UUID tenantId, final CompletableFuture<String> errorFuture) throws Exception {
+            final String rawToken, final CompletableFuture<String> errorFuture) throws Exception {
         WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
         client.setMessageConverter(new JacksonJsonMessageConverter());
 
         WebSocketHttpHeaders httpHeaders = new WebSocketHttpHeaders();
-        httpHeaders.add("X-Pivot-User-Id", userId.toString());
-        httpHeaders.add("X-Pivot-Tenant-Id", tenantId.toString());
+        httpHeaders.add("Authorization", "Bearer " + rawToken);
 
         String url = "ws://localhost:" + port + "/api/collaboratif/ws/whiteboard";
         StompSession session = client.connectAsync(url, httpHeaders, new StompSessionHandlerAdapter() {
@@ -196,16 +208,52 @@ class WhiteboardOversizedDrawPayloadIT {
      * Creates a board owned by {@code ownerId} within {@code tenantId} and saves it directly via
      * the JPA repositories.
      *
-     * @param tenantId the tenant UUID
-     * @param ownerId  the owner UUID
+     * @param tenantId the tenant's {@code public.tenants.id}
+     * @param ownerId  the owner's {@code public.users.id}
      * @return the persisted board
      */
-    private Board createBoardWithOwner(final UUID tenantId, final UUID ownerId) {
+    private Board createBoardWithOwner(final long tenantId, final long ownerId) {
         Board board = new Board("Test board", tenantId, ownerId, Instant.now());
         boardRepository.save(board);
         boardMemberRepository.save(new BoardMember(
                 new BoardMemberId(board.getId(), ownerId), BoardRole.OWNER, Instant.now()));
         return board;
+    }
+
+    /**
+     * Seeds a tenant row in {@code public.tenants}.
+     *
+     * @return the generated tenant id
+     * @throws Exception if the insert fails
+     */
+    private long seedTenant() throws Exception {
+        return PlatformAuthTestSupport.seedTenant(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), null);
+    }
+
+    /**
+     * Seeds an active user row in {@code public.users} belonging to the given tenant.
+     *
+     * @param tenantId the owning tenant's id
+     * @return the generated user id
+     * @throws Exception if the insert fails
+     */
+    private long seedUser(final long tenantId) throws Exception {
+        return PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantId, true);
+    }
+
+    /**
+     * Issues a valid, non-expired {@code active} bearer token for the given user.
+     *
+     * @param userId the owning user's id
+     * @return the raw bearer token
+     * @throws Exception if the insert fails
+     */
+    private String issueToken(final long userId) throws Exception {
+        return PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                userId, "active", Instant.now().plusSeconds(3600));
     }
 
     /**
