@@ -15,6 +15,7 @@ import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
+import org.springframework.web.socket.CloseStatus;
 
 import java.security.Principal;
 import java.time.Duration;
@@ -35,7 +36,13 @@ import java.util.UUID;
  *       {@code /app/whiteboard/{boardId}/...} and enforces a rate limit of
  *       {@value #MAX_MESSAGES_PER_SECOND} messages per second per (tenantId, boardId,
  *       userId) combination using a fixed-window Redis counter. Accepted frames also
- *       refresh the heartbeat cache entry (TTL 5 min) used for liveness tracking.</li>
+ *       refresh the heartbeat cache entry (TTL 5 min) used for liveness tracking. Every
+ *       rate-limited frame increments a per-session strike counter; on the
+ *       {@value #MAX_STRIKES}th <em>consecutive</em> violation the session is not just warned —
+ *       it is actually closed via {@link WhiteboardSessionRegistry#close} (the closure
+ *       notification is delivered to {@code /user/queue/errors} first, then the underlying
+ *       WebSocket transport connection is terminated), matching the US08.3.1 AC "fermeture après
+ *       3 violations consécutives".</li>
  * </ul>
  *
  * <p>Both checks use {@link MembershipCacheService} which caches results in Redis with
@@ -78,6 +85,7 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
     private final MembershipCacheService membershipCacheService;
     private final StringRedisTemplate redisTemplate;
     private final Counter throttledCounter;
+    private final WhiteboardSessionRegistry sessionRegistry;
 
     /**
      * Messaging template used to deliver error notifications to denied sessions.
@@ -93,16 +101,20 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
      * @param membershipCacheService Redis+DB membership cache for authorization decisions
      * @param redisTemplate          Redis client for rate-limit counters
      * @param meterRegistry          Micrometer registry for the throttled-messages counter
+     * @param sessionRegistry        registry used to force-close a session after
+     *                               {@value #MAX_STRIKES} consecutive rate-limit violations
      */
     public WhiteboardChannelInterceptor(
             final MembershipCacheService membershipCacheService,
             final StringRedisTemplate redisTemplate,
-            final MeterRegistry meterRegistry) {
+            final MeterRegistry meterRegistry,
+            final WhiteboardSessionRegistry sessionRegistry) {
         this.membershipCacheService = membershipCacheService;
         this.redisTemplate = redisTemplate;
         this.throttledCounter = Counter.builder("messages.throttled.total")
                 .description("Total STOMP canvas messages dropped due to rate limiting")
                 .register(meterRegistry);
+        this.sessionRegistry = sessionRegistry;
     }
 
     /**
@@ -214,6 +226,7 @@ public class WhiteboardChannelInterceptor implements ChannelInterceptor {
                 resetStrikes(sessionId, principal.tenantId(), boardId, principal.userId());
                 sendError(accessor.getSessionId(), accessor.getUser(),
                         "Session closed after repeated rate limit violations — please reconnect");
+                sessionRegistry.close(sessionId, CloseStatus.POLICY_VIOLATION);
             } else {
                 sendError(accessor.getSessionId(), accessor.getUser(),
                         "Rate limit exceeded (" + strikes + "/" + MAX_STRIKES + " violations)");
