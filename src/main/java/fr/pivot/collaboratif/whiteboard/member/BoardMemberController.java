@@ -21,8 +21,8 @@ import java.util.UUID;
  * REST controller exposing board member management operations under
  * {@code /whiteboard/boards/{boardId}/members}.
  *
- * <p>All endpoints require {@code X-Pivot-User-Id} and {@code X-Pivot-Tenant-Id} headers,
- * resolved into a {@link RequestPrincipal} by {@code RequestPrincipalResolver}.
+ * <p>All endpoints require a valid {@code Authorization: Bearer <token>} header, resolved into
+ * a {@link RequestPrincipal} by {@code RequestPrincipalResolver} (EN08.3).
  *
  * <p>The full path (including the application context) is
  * {@code /api/collaboratif/whiteboard/boards/{boardId}/members}.
