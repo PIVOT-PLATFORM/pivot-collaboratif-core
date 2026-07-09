@@ -1,17 +1,102 @@
 name: Deploy
 
-# Déploiement production — déclenché UNIQUEMENT à la publication d'une GitHub Release (créée
-# par Semantic Release dans release.yml). Event-based : ne tourne donc que sur de vraies
-# releases (jamais "skipped" sur les pushs sans release) et conserve les garde-fous de
-# l'environnement GitHub `production` : approvals, secrets d'environnement, règles de
-# déploiement et historique des deployments.
+# Déploiement production — #52 ([CRITIQUE] Déploiement production non implémenté), en
+# s'alignant sur le pattern déjà éprouvé dans pivot-core (EN07.5, `.github/workflows/deploy.yml`)
+# et pivot-ui : SSH + `docker compose`, vérification de provenance SLSA avant déploiement, smoke
+# test post-déploiement, rollback automatique via marker file de dernière version saine,
+# notification Slack en dégradé si aucun webhook n'est configuré.
+#
+# Déclenchement — identique pivot-core : `on: release: published` réutilise l'image déjà
+# construite/scannée/publiée par `release.yml` (pas de rebuild ici) ; `workflow_dispatch` permet
+# un rollback / re-déploiement manuel d'une version précise.
+#
+# Secrets requis (NOMS IDENTIQUES à pivot-core/pivot-ui — infrastructure plateforme partagée,
+# un seul serveur de prod pour toute la suite PIVOT ; à provisionner sur CE repo séparément,
+# hors périmètre de cette PR) :
+#   - PROD_SSH_HOST, PROD_SSH_USER, PROD_SSH_KEY   : accès SSH au serveur de production
+#   - PROD_SSH_PORT                                : optionnel, défaut 22
+#   - PROD_DEPLOY_PATH                             : répertoire serveur contenant
+#                                                     docker-compose.prod.yml (celui de
+#                                                     pivot-core — ce workflow ne pilote QUE le
+#                                                     service `pivot-collaboratif-core`, ajouté
+#                                                     par la PR compagnon sur pivot-core)
+#   - GH_PACKAGES_USERNAME, GH_PACKAGES_TOKEN      : login GHCR sur le serveur avant `docker
+#                                                     compose pull` — packages GHCR privés par
+#                                                     défaut (org), même contrainte que
+#                                                     pivot-core (voir son propre deploy.yml).
+#                                                     Token = PAT dédié, scope `read:packages`
+#                                                     uniquement (jamais le GITHUB_TOKEN du run)
+#   - SLACK_WEBHOOK_URL                            : optionnel — absent = notification Slack
+#                                                     dégradée en warning explicite, le run reste
+#                                                     visible sans aucun secret via l'onglet
+#                                                     Environments/Deployments (natif GitHub,
+#                                                     déjà actif via `environment: production`)
+#
+# Image versionnée : release.yml (ce repo) tague déjà `${VERSION}` (semver) en plus de
+# `${GITHUB_SHA}` et `latest` — nécessaire pour retrouver de façon stable l'image correspondant
+# à la Release (le tag Git pointe sur le commit de bump semantic-release, pas sur le commit
+# buildé). `:latest` est de toute façon interdit par `.plumber.yaml`
+# (`containerImageMustNotUseForbiddenTags`).
+#
+# Vérification de provenance (SLSA, avant tout déploiement) : release.yml appelle bien
+# `slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0`
+# (job `provenance-container`) — une attestation SLSA L3 EST générée et attachée à l'image dans
+# GHCR. MAIS cette attestation est attachée en artefact OCI signé cosign (Sigstore) directement
+# dans le registry — PAS publiée dans l'API GitHub native "Attestations" (ce store n'est peuplé
+# que par `actions/attest-build-provenance`/`actions/attest`, jamais utilisés ici, et de toute
+# façon réservé à GitHub Enterprise Cloud pour un repo privé). Conséquence vérifiée
+# (`gh attestation verify --help`, doc slsa-github-generator, 2026-07-10) : la commande "nue"
+# `gh attestation verify oci://... --repo ...` interrogerait uniquement l'API GitHub et ne
+# trouverait JAMAIS rien ici — elle échouerait sur CHAQUE run, indépendamment de l'intégrité
+# réelle de l'image. Le step ci-dessous utilise donc `--bundle-from-oci` (va chercher le bundle
+# directement dans le registry OCI, où il existe réellement) + `--signer-workflow` (l'identité
+# du signataire réel est le reusable workflow du générateur SLSA, pas ce repo — cf.
+# `gh attestation verify --help`, section reusable workflow). Cette combinaison n'a PAS encore
+# été validée par un run réel de ce workflow (aucun déploiement prod exécuté à ce jour sur ce
+# repo) — gap explicitement documenté dans la description de la PR, à confirmer/ajuster au
+# premier run réel plutôt que supposé fonctionnel.
+#
+# Cible du smoke test — port ET chemin vérifiés dans le code réel de ce repo (pas supposés) :
+#   - Port 8083 (pas 9083) : `management.server.port` n'est PAS configuré dans
+#     `application.yml` — Actuator tourne donc sur le MÊME port que l'application (8083), pas
+#     sur un port de management dédié. Le tableau de ports documenté dans
+#     `pivot-core/docker-compose.prod.yml` (9083 pour ce module) décrit une convention CIBLE,
+#     pas l'état actuel de ce repo — écart à corriger dans un futur Enabler dédié (aligner sur
+#     le pattern EN04.2 de pivot-core : management.server.port séparé), pas dans cette PR.
+#   - Chemin `/api/collaboratif/actuator/health` (pas `/actuator/health/readiness`, pas
+#     `/actuator/health` nu) : deux raisons combinées, toutes deux vérifiées dans le code —
+#     (1) aucun groupe `readiness` n'est configuré (`management.endpoint.health.group.*`
+#     absent de `application.yml`, seuls `health,info,prometheus` sont exposés) → repli sur le
+#     groupe racine `/actuator/health`, exactement comme demandé si le groupe dédié n'existe
+#     pas encore ; (2) tant qu'aucun `management.server.port` séparé n'existe (point ci-dessus),
+#     Actuator tourne sur le MÊME serveur applicatif que le reste de l'API et hérite donc de
+#     `server.servlet.context-path: /api/collaboratif` — précédent identique déjà documenté
+#     dans `pivot-core/docker-compose.prod.yml` (commentaire EN04.4 : le chemin sans
+#     management.server.port dédié était `http://localhost:8080/api/actuator/health`, jamais
+#     `http://localhost:8080/actuator/health`).
 
 on:
   release:
     types: [published]
-  workflow_dispatch:   # déclenchement manuel possible (rollback, re-déploiement)
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version à (re)déployer (ex. "1.4.0", sans le préfixe "v"). Optionnel si le run suit un
+          événement "release" (résolue depuis le tag) — obligatoire en déclenchement manuel.
+        required: false
+        type: string
 
 permissions: read-all
+
+# Un déploiement à la fois pour CE service — groupe distinct de celui de pivot-core
+# (`deploy-production`) pour que les deux repos ne se sérialisent pas inutilement l'un l'autre :
+# un déploiement pivot-core en cours ne doit pas mettre en file d'attente un déploiement
+# pivot-collaboratif-core (services indépendants du même `docker-compose.prod.yml`, sur le même
+# serveur, mais pilotés par deux workflows/repos distincts).
+concurrency:
+  group: deploy-collaboratif-core-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -21,7 +106,161 @@ jobs:
     environment: production
     permissions:
       contents: read
+      # Nécessaire pour que `docker login ghcr.io` (step de vérification d'attestation
+      # ci-dessous) puisse tirer le manifest/bundle OCI d'un package privé avec GITHUB_TOKEN —
+      # `permissions: read-all` en tête de fichier inclut déjà packages:read, mais ce job le
+      # restreint explicitement à `contents: read` seul ; il faut donc le redéclarer ici.
+      packages: read
+    env:
+      # Lu une fois ici : évite de référencer `secrets.*` directement dans les `if:` des steps
+      # de notification plus bas (autorisé via le contexte `env`, pas directement via `secrets`).
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
-      - name: Deploy (TODO)
-        run: echo "TODO — brancher ici le déploiement (SSH + docker compose, Kubernetes, etc.)"
+      - name: Resolve target version
+        id: version
+        env:
+          # Indirection par `env:` plutôt qu'interpolation directe de `github.event.*` dans le
+          # script (workflowMustNotInjectUserInputInScripts).
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DISPATCH_VERSION:-}" ]; then
+            VERSION="${DISPATCH_VERSION#v}"
+          elif [ -n "${RELEASE_TAG:-}" ]; then
+            VERSION="${RELEASE_TAG#v}"
+          else
+            echo "::error::Aucune version résolue — déclenchement manuel sans input 'version' et hors événement 'release'."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version cible : pivot-collaboratif-core:${VERSION}"
+
+      - name: Verify image attestation (SLSA provenance) before deploy
+        id: attest-verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/pivot-platform/pivot-collaboratif-core:${VERSION}"
+
+          # Package GHCR privé (org) — même contrainte que le login serveur plus bas dans ce
+          # fichier : sans authentification, le pull du manifest/bundle échoue en 401/403.
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+          echo "Vérification de la provenance SLSA pour ${IMAGE}…"
+          gh attestation verify "oci://${IMAGE}" \
+            --repo PIVOT-PLATFORM/pivot-collaboratif-core \
+            --bundle-from-oci \
+            --signer-workflow slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml
+
+      - name: Deploy — pull image & restart pivot-collaboratif-core
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        env:
+          PIVOT_COLLABORATIF_CORE_VERSION: ${{ steps.version.outputs.version }}
+          DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          GH_PACKAGES_USERNAME: ${{ secrets.GH_PACKAGES_USERNAME }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_SSH_PORT || '22' }}
+          envs: PIVOT_COLLABORATIF_CORE_VERSION,DEPLOY_PATH,GH_PACKAGES_USERNAME,GH_PACKAGES_TOKEN
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:?PROD_DEPLOY_PATH not set}"
+            # GHCR packages are private (org default) — docker login persists to
+            # ~/.docker/config.json on the server, so this only needs to run once per
+            # deploy, not on every SSH step in this job (same reasoning as pivot-core's
+            # own deploy.yml).
+            echo "${GH_PACKAGES_TOKEN}" | docker login ghcr.io -u "${GH_PACKAGES_USERNAME}" --password-stdin
+            echo "Pull + restart pivot-collaboratif-core:${PIVOT_COLLABORATIF_CORE_VERSION}"
+            docker compose -f docker-compose.prod.yml pull pivot-collaboratif-core
+            docker compose -f docker-compose.prod.yml up -d pivot-collaboratif-core
+
+      - name: Smoke test + automatic rollback on failure
+        id: smoke
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        env:
+          PIVOT_COLLABORATIF_CORE_VERSION: ${{ steps.version.outputs.version }}
+          DEPLOY_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_SSH_PORT || '22' }}
+          envs: PIVOT_COLLABORATIF_CORE_VERSION,DEPLOY_PATH
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:?PROD_DEPLOY_PATH not set}"
+
+            # Fichier marqueur local (sur le serveur) = source de vérité du rollback. Écrit
+            # uniquement après un smoke test réussi — jamais avant.
+            VERSION_FILE=".pivot-collaboratif-core-version"
+            NEW_VERSION="${PIVOT_COLLABORATIF_CORE_VERSION}"
+            PREVIOUS_VERSION="$(cat "${VERSION_FILE}" 2>/dev/null || true)"
+
+            # Port 8083 (pas 9083) + chemin /api/collaboratif/actuator/health (pas
+            # /actuator/health/readiness) : voir le commentaire de tête de ce fichier — aucun
+            # management.server.port dédié ni groupe "readiness" n'existe encore dans
+            # application.yml de ce repo, vérifié dans le code au moment de cette PR (pas
+            # supposé). `docker compose exec` exécute curl à l'intérieur du conteneur (présent
+            # dans l'image, cf. Dockerfile) — pas de dépendance à un accès réseau depuis le
+            # runner GitHub ni depuis l'hôte, port de management jamais publié.
+            smoke_test() {
+              for _ in $(seq 1 10); do
+                if docker compose -f docker-compose.prod.yml exec -T pivot-collaboratif-core \
+                    curl -fsS -m 5 http://localhost:8083/api/collaboratif/actuator/health 2>/dev/null \
+                    | grep -q '"status":"UP"'; then
+                  return 0
+                fi
+                sleep 6
+              done
+              return 1
+            }
+
+            if smoke_test; then
+              echo "${NEW_VERSION}" > "${VERSION_FILE}"
+              echo "Smoke test OK — pivot-collaboratif-core:${NEW_VERSION} déployé, marqué comme dernière version saine."
+              exit 0
+            fi
+
+            echo "::error::Smoke test échoué pour pivot-collaboratif-core:${NEW_VERSION}."
+
+            if [ -z "${PREVIOUS_VERSION}" ]; then
+              echo "::error::Aucune version précédente connue (${VERSION_FILE} absent — probablement le tout premier déploiement) — rollback impossible, intervention manuelle requise."
+              exit 1
+            fi
+
+            echo "Rollback automatique vers pivot-collaboratif-core:${PREVIOUS_VERSION}…"
+            export PIVOT_COLLABORATIF_CORE_VERSION="${PREVIOUS_VERSION}"
+            docker compose -f docker-compose.prod.yml pull pivot-collaboratif-core
+            docker compose -f docker-compose.prod.yml up -d pivot-collaboratif-core
+
+            if smoke_test; then
+              echo "::error::Rollback vers pivot-collaboratif-core:${PREVIOUS_VERSION} réussi et sain — pivot-collaboratif-core:${NEW_VERSION} n'a PAS été retenu. Investiguer avant de retenter ce déploiement."
+            else
+              echo "::error::Rollback vers pivot-collaboratif-core:${PREVIOUS_VERSION} a AUSSI échoué le smoke test — état du serveur incertain, intervention manuelle URGENTE."
+            fi
+            # Échec du job dans les deux cas ci-dessus : le déploiement de ${NEW_VERSION} a
+            # échoué son smoke test, une alerte est nécessaire que le rollback ait réussi ou non.
+            exit 1
+
+      - name: Notify — Slack
+        if: always() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && ':white_check_mark:' || ':x:' }} Déploiement pivot-collaboratif-core ${{ steps.version.outputs.version }} — ${{ job.status }}\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+
+      - name: Notify — fallback (aucun webhook configuré)
+        if: always() && env.SLACK_WEBHOOK_URL == ''
+        run: |
+          echo "::warning::Aucun secret SLACK_WEBHOOK_URL configuré — notification Slack non envoyée. Statut de ce déploiement visible sans aucun secret via l'onglet Environments/Deployments (natif GitHub, déjà actif) : ${{ github.server_url }}/${{ github.repository }}/deployments"

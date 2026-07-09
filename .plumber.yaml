@@ -36,6 +36,9 @@ github:
         # Issue #41 — dast-full.yml (ZAP full scan authentifié staging pivot-ui), port fidèle de
         # pivot-core/.plumber.yaml (US05.13.2)
         - zaproxy/action-full-scan
+        # #52 — deploy.yml (déploiement prod SSH + notification), identique pivot-core EN07.5
+        - appleboy/ssh-action
+        - slackapi/slack-github-action
 
     # --- Images : pas de tags mutables ---
     containerImageMustNotUseForbiddenTags:
