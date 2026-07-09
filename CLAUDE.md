@@ -592,7 +592,7 @@ Index : `.project/skills/_index.yaml`
 |-------|---------|---------------|
 | `skill-spring-architecture` | `skill-spring-architecture.yaml` | Tout fichier Java (Controller, Service, Repository, DTO) |
 | `skill-bdd-flyway` | `skill-bdd-flyway.yaml` | Migration Flyway, entité JPA, requête @Query |
-| `skill-oidc-security` | `skill-oidc-security.yaml` | Une fois `pivot-core-starter` branché — fichier auth/, SecurityConfig, AC sécurité |
+| `skill-oidc-security` | `skill-oidc-security.yaml` | Fichier auth/, SecurityConfig, AC sécurité (`pivot-core-starter` branché depuis EN08.3) |
 | `skill-module-system` | `skill-module-system.yaml` | Fichier modules/ ou registry/, US module |
 | `skill-ac-traceability` | `skill-ac-traceability.yaml` | **Toujours** — toute implémentation d'US, Gate 2, Gate 4 |
 | `skill-testing-strategy` | `skill-testing-strategy.yaml` | Nouveau test, coverage < 85 % (seuil Gate 2), Testcontainers |

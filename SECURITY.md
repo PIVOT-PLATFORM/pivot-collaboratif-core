@@ -84,11 +84,32 @@ Pas de programme bug bounty actuellement.
 
 - **Pas d'entités JPA exposées en API** — DTOs uniquement, enforced par code review
 - **Isolation tenant** — `tenantId` résolu exclusivement depuis le token porteur (via
-  `fr.pivot:pivot-core-starter` une fois publié — voir `CLAUDE.md`), jamais accepté en body/query/header
+  `fr.pivot:pivot-core-starter`, EN08.3 — voir `CLAUDE.md`), jamais accepté en body/query/header
 - **Secrets via variables d'environnement** — jamais en dur dans le code (enforced par Gitleaks CI)
 - **SBOM généré à chaque release** — disponible dans GitHub Releases
 - **SLSA L3** — provenance attestée sur chaque release (JAR + image Docker)
 - **Pas de `--no-verify`** — hooks qualité non contournables
+
+---
+
+## Secrets longue durée — rotation
+
+`SEMANTIC_RELEASE_TOKEN` (utilisé par `.github/workflows/release.yml`, jobs `prepare`/`release`
+pour le checkout et le push du commit de release) est un Personal Access Token (PAT), pas
+`secrets.GITHUB_TOKEN` — le commit de release doit re-déclencher les workflows en aval
+(build/deploy), ce que `GITHUB_TOKEN` ne permet pas nativement (GitHub bloque volontairement
+cette boucle de déclenchement pour `GITHUB_TOKEN`). C'est donc un identifiant longue durée, sans
+rotation automatique — politique explicite ci-dessous :
+
+- **Scope minimal** : PAT **fine-grained**, limité au seul repo `pivot-collaboratif-core`
+  (jamais un PAT classic, jamais un scope organisation entière). Permission strictement
+  nécessaire : `contents: write` (checkout + push du commit de release + re-déclenchement des
+  workflows en aval) — aucun scope additionnel (pas `admin`, pas `packages`, pas d'accès aux
+  autres repos PIVOT).
+- **Rotation** : annuelle au minimum, et immédiatement en cas de départ ou de changement de rôle
+  du mainteneur propriétaire du token.
+- **Propriétaire** : le mainteneur du repo — responsable de la génération, du renouvellement et
+  de la révocation du token dans les secrets Actions du repo.
 
 ---
 
