@@ -51,6 +51,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * unit-level coverage of the strike counter's state machine lives in
  * {@code WhiteboardChannelInterceptorTest}; this class is the real-transport, real-Redis
  * counterpart.
+ *
+ * <p>Connects to the WebSocket endpoint using a real {@code Authorization: Bearer <token>}
+ * header validated by {@code StompHandshakeInterceptor} (EN08.3). Tenants/users/tokens are
+ * seeded through {@link PlatformAuthTestSupport} — the {@code public.tenants}/{@code
+ * public.users} rows must exist before board/board-member rows are inserted since {@code
+ * board.tenant_id}/{@code owner_id} and {@code board_member.user_id} now carry FK constraints
+ * into those tables.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
@@ -66,9 +73,9 @@ class WhiteboardRateLimitEnforcementIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies Testcontainer-derived connection properties to the Spring context and seeds the
-     * {@code public} schema (owned by {@code pivot-core}) before the Spring context and its
-     * Flyway run start.
+     * Supplies Testcontainer-derived connection properties to the Spring context and seeds
+     * the {@code public} schema (owned by {@code pivot-core}) before the Spring context and
+     * its Flyway run start.
      *
      * @param registry the dynamic property registry
      */
@@ -116,10 +123,9 @@ class WhiteboardRateLimitEnforcementIT {
      */
     @Test
     void threeConsecutiveRateLimitViolationsActuallyCloseTheConnection() throws Exception {
-        long tenantId = PlatformAuthTestSupport.seedTenant(jdbcUrl(), dbUser(), dbPassword(), null);
-        long ownerId = PlatformAuthTestSupport.seedUser(jdbcUrl(), dbUser(), dbPassword(), tenantId, true);
-        String token = PlatformAuthTestSupport.issueToken(
-                jdbcUrl(), dbUser(), dbPassword(), ownerId, "active", Instant.now().plusSeconds(3600));
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
         Board board = createBoardWithOwner(tenantId, ownerId);
 
         StompSession session = connectAs(token);
@@ -175,10 +181,11 @@ class WhiteboardRateLimitEnforcementIT {
     // =========================================================================
 
     /**
-     * Establishes a STOMP connection authenticated via the given bearer token, sent as
-     * {@code Authorization: Bearer <token>} on the handshake HTTP request (EN08.3).
+     * Connects to the WebSocket endpoint using the given bearer token on the handshake
+     * {@code Authorization} header, blocking until the STOMP session is established or
+     * timing out after 5 seconds.
      *
-     * @param rawToken the raw bearer token
+     * @param rawToken the raw bearer token to send as {@code Authorization: Bearer <token>}
      * @return an open STOMP session
      */
     private StompSession connectAs(final String rawToken) throws Exception {
@@ -211,15 +218,39 @@ class WhiteboardRateLimitEnforcementIT {
         return board;
     }
 
-    private String jdbcUrl() {
-        return postgres.getJdbcUrl();
+    /**
+     * Seeds a tenant row in {@code public.tenants}.
+     *
+     * @return the generated tenant id
+     * @throws Exception if the insert fails
+     */
+    private long seedTenant() throws Exception {
+        return PlatformAuthTestSupport.seedTenant(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), null);
     }
 
-    private String dbUser() {
-        return postgres.getUsername();
+    /**
+     * Seeds an active user row in {@code public.users} belonging to the given tenant.
+     *
+     * @param tenantId the owning tenant's id
+     * @return the generated user id
+     * @throws Exception if the insert fails
+     */
+    private long seedUser(final long tenantId) throws Exception {
+        return PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantId, true);
     }
 
-    private String dbPassword() {
-        return postgres.getPassword();
+    /**
+     * Issues a valid, non-expired {@code active} bearer token for the given user.
+     *
+     * @param userId the owning user's id
+     * @return the raw bearer token
+     * @throws Exception if the insert fails
+     */
+    private String issueToken(final long userId) throws Exception {
+        return PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                userId, "active", Instant.now().plusSeconds(3600));
     }
 }
