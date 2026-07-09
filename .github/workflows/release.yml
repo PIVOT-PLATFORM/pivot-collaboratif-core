@@ -167,14 +167,23 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/pivot-collaboratif-core"
+          # NOT "${GITHUB_REPOSITORY,,}/pivot-collaboratif-core" — GITHUB_REPOSITORY is already
+          # "PIVOT-PLATFORM/pivot-collaboratif-core"; appending the repo name again doubled the
+          # path segment (ghcr.io/pivot-platform/pivot-collaboratif-core/pivot-collaboratif-core),
+          # which docker-compose.prod.yml can never resolve — same bug fixed on pivot-core (#198)
+          # and pivot-ui (#128).
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "IMAGE_REF=${IMAGE}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          # Stable semver tag — .plumber.yaml (containerImageMustNotUseForbiddenTags) forbids
+          # deploying "latest"; deploy.yml needs a tag that survives past this one build.
+          echo "IMAGE_VERSION=${IMAGE}:${VERSION}" >> "$GITHUB_ENV"
           echo "IMAGE_LATEST=${IMAGE}:latest" >> "$GITHUB_ENV"
           echo "image_name=${IMAGE}" >> "$GITHUB_OUTPUT"
           docker buildx build --platform linux/amd64 --load \
             --secret id=github_actor,env=GITHUB_ACTOR \
             --secret id=github_token,env=GITHUB_TOKEN \
             -t "${IMAGE}:${GITHUB_SHA}" \
+            -t "${IMAGE}:${VERSION}" \
             -t "${IMAGE}:latest" \
             .
 
@@ -199,6 +208,7 @@ jobs:
         id: push
         run: |
           docker push "${IMAGE_REF}"
+          docker push "${IMAGE_VERSION}"
           PUSH_OUT=$(docker push "${IMAGE_LATEST}" 2>&1)
           printf '%s\n' "${PUSH_OUT}"
           DIGEST=$(printf '%s\n' "${PUSH_OUT}" | grep -oE 'sha256:[a-f0-9]{64}' | tail -1)
