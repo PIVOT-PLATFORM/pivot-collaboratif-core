@@ -56,12 +56,16 @@ class WebSocketConfigRelayIT {
                     .withExposedPorts(61613, 8161);
 
     /**
-     * Supplies Testcontainer-derived connection properties to the Spring context.
+     * Supplies Testcontainer-derived connection properties to the Spring context and seeds
+     * the {@code public} schema (owned by {@code pivot-core}, not managed by this repo's own
+     * Flyway) before the Spring context — and its Flyway run, which has FK references into
+     * {@code public.*} via {@code collaboratif.board} — starts (EN08.3).
      *
      * @param registry the dynamic property registry
+     * @throws Exception if seeding the public schema fails
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
@@ -72,6 +76,8 @@ class WebSocketConfigRelayIT {
         registry.add("pivot.activemq.relay-enabled", () -> true);
         registry.add("pivot.activemq.relay-host", activemq::getHost);
         registry.add("pivot.activemq.relay-port", () -> activemq.getMappedPort(61613));
+        fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @Autowired
