@@ -1,5 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.join;
 
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
+import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport.AuthFixture;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,7 +21,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import java.util.UUID;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -32,7 +34,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>Covers US08.2.2 acceptance criteria: joining a board via a share token with all
  * validation paths (invalid token, expired, quota exhausted, already member, cross-tenant,
- * rate limiting, missing token, and successful join).
+ * rate limiting, missing token, and successful join). Callers authenticate via real bearer
+ * tokens issued for tenants/users seeded through {@link PlatformAuthTestSupport} (EN08.3).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
@@ -51,17 +54,21 @@ class BoardJoinControllerIT {
             new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
     /**
-     * Supplies container connection properties to the Spring context.
+     * Supplies container connection properties to the Spring context and seeds the
+     * {@code public} schema (owned by {@code pivot-core}) before the Spring context and its
+     * Flyway run start.
      *
      * @param registry the dynamic property registry
      */
     @DynamicPropertySource
-    static void overrideProperties(final DynamicPropertyRegistry registry) {
+    static void overrideProperties(final DynamicPropertyRegistry registry) throws Exception {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        PlatformAuthTestSupport.createPublicSchema(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
     }
 
     @Autowired
@@ -73,28 +80,61 @@ class BoardJoinControllerIT {
     private MockMvc mockMvc;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private static final UUID OWNER = UUID.randomUUID();
-    private static final UUID JOINER = UUID.randomUUID();
-    private static final UUID TENANT = UUID.randomUUID();
-    private static final UUID OTHER_TENANT = UUID.randomUUID();
+    private long tenantId;
+    private String ownerToken;
+    private String joinerToken;
+    private String otherTenantToken;
 
-    /** Initialises MockMvc and clears all rate-limit counters before each test. */
+    /**
+     * Initialises MockMvc, clears all rate-limit counters, and seeds an OWNER/JOINER pair in
+     * one tenant plus a lone user in a second tenant (cross-tenant scenarios) before each test.
+     */
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         mockMvc = MockMvcBuilders.webAppContextSetup(wac).build();
         rateLimitService.resetAll();
+
+        AuthFixture owner = PlatformAuthTestSupport.seedActiveUserWithToken(jdbcUrl(), dbUser(), dbPassword());
+        tenantId = owner.tenantId();
+        ownerToken = owner.rawToken();
+
+        long joinerId = PlatformAuthTestSupport.seedUser(jdbcUrl(), dbUser(), dbPassword(), tenantId, true);
+        joinerToken = tokenFor(joinerId);
+
+        AuthFixture otherTenantUser =
+                PlatformAuthTestSupport.seedActiveUserWithToken(jdbcUrl(), dbUser(), dbPassword());
+        otherTenantToken = otherTenantUser.rawToken();
     }
 
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
-    private String createBoard(final UUID userId, final UUID tenantId, final String title)
-            throws Exception {
+    private String jdbcUrl() {
+        return postgres.getJdbcUrl();
+    }
+
+    private String dbUser() {
+        return postgres.getUsername();
+    }
+
+    private String dbPassword() {
+        return postgres.getPassword();
+    }
+
+    private long newUserInTenant(final long forTenantId) throws Exception {
+        return PlatformAuthTestSupport.seedUser(jdbcUrl(), dbUser(), dbPassword(), forTenantId, true);
+    }
+
+    private String tokenFor(final long userId) throws Exception {
+        return PlatformAuthTestSupport.issueToken(
+                jdbcUrl(), dbUser(), dbPassword(), userId, "active", Instant.now().plusSeconds(3600));
+    }
+
+    private String createBoard(final String token, final String title) throws Exception {
         MvcResult r = mockMvc.perform(
                         post(BOARDS_PATH)
-                                .header("X-Pivot-User-Id", userId)
-                                .header("X-Pivot-Tenant-Id", tenantId)
+                                .header("Authorization", "Bearer " + token)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"title\":\"" + title + "\"}"))
                 .andExpect(status().isCreated())
@@ -103,8 +143,7 @@ class BoardJoinControllerIT {
     }
 
     private String generateShareToken(
-            final UUID userId,
-            final UUID tenantId,
+            final String token,
             final String boardId,
             final String role,
             final Integer maxUses,
@@ -112,8 +151,7 @@ class BoardJoinControllerIT {
         String body = buildShareBody(role, maxUses, ttlDays);
         MvcResult r = mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", userId)
-                                .header("X-Pivot-Tenant-Id", tenantId)
+                                .header("Authorization", "Bearer " + token)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(body))
                 .andExpect(status().isCreated())
@@ -146,13 +184,12 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_validEditorToken_returns200WithRedirectUrl() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board Join Test");
-        String token = generateShareToken(OWNER, TENANT, boardId, "EDITOR", null, null);
+        String boardId = createBoard(ownerToken, "Board Join Test");
+        String token = generateShareToken(ownerToken, boardId, "EDITOR", null, null);
 
         MvcResult result = mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", JOINER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joinerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.boardId").value(boardId))
                 .andExpect(jsonPath("$.title").value("Board Join Test"))
@@ -171,13 +208,12 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_validViewerToken_returns200() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Board Viewer");
-        String token = generateShareToken(OWNER, TENANT, boardId, "VIEWER", null, null);
+        String boardId = createBoard(ownerToken, "Board Viewer");
+        String token = generateShareToken(ownerToken, boardId, "VIEWER", null, null);
 
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", JOINER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joinerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("VIEWER"));
     }
@@ -195,8 +231,7 @@ class BoardJoinControllerIT {
     void join_missingToken_returns400() throws Exception {
         mockMvc.perform(
                         post(JOIN_PATH)
-                                .header("X-Pivot-User-Id", JOINER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joinerToken))
                 .andExpect(status().isBadRequest());
     }
 
@@ -209,8 +244,7 @@ class BoardJoinControllerIT {
     void join_blankToken_returns400() throws Exception {
         mockMvc.perform(
                         post(JOIN_PATH + "?token=   ")
-                                .header("X-Pivot-User-Id", JOINER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joinerToken))
                 .andExpect(status().isBadRequest());
     }
 
@@ -219,9 +253,9 @@ class BoardJoinControllerIT {
     // -------------------------------------------------------------------------
 
     /**
-     * Given missing auth headers,
+     * Given no Authorization header,
      * when POST /whiteboard/join,
-     * then returns 401 (RequestPrincipalResolver rejects absent headers).
+     * then returns 401 (RequestPrincipalResolver rejects the missing header).
      */
     @Test
     void join_missingAuthHeaders_returns401() throws Exception {
@@ -242,8 +276,7 @@ class BoardJoinControllerIT {
     void join_invalidToken_returns404() throws Exception {
         mockMvc.perform(
                         post(JOIN_PATH + "?token=invalid-token-that-does-not-exist")
-                                .header("X-Pivot-User-Id", JOINER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joinerToken))
                 .andExpect(status().isNotFound());
     }
 
@@ -258,23 +291,21 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_tokenQuotaExceeded_returns410() throws Exception {
-        UUID secondJoiner = UUID.randomUUID();
-        UUID thirdJoiner = UUID.randomUUID();
-        String boardId = createBoard(OWNER, TENANT, "Quota Board");
-        String token = generateShareToken(OWNER, TENANT, boardId, "EDITOR", 1, null);
+        String secondJoinerToken = tokenFor(newUserInTenant(tenantId));
+        String thirdJoinerToken = tokenFor(newUserInTenant(tenantId));
+        String boardId = createBoard(ownerToken, "Quota Board");
+        String token = generateShareToken(ownerToken, boardId, "EDITOR", 1, null);
 
         // First join consumes the token
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", secondJoiner)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + secondJoinerToken))
                 .andExpect(status().isOk());
 
         // Second join → 410 quota exhausted
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", thirdJoiner)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + thirdJoinerToken))
                 .andExpect(status().isGone());
     }
 
@@ -289,22 +320,20 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_alreadyMember_returns409() throws Exception {
-        UUID joiner2 = UUID.randomUUID();
-        String boardId = createBoard(OWNER, TENANT, "Dup Board");
-        String token = generateShareToken(OWNER, TENANT, boardId, "EDITOR", 2, null);
+        String joiner2Token = tokenFor(newUserInTenant(tenantId));
+        String boardId = createBoard(ownerToken, "Dup Board");
+        String token = generateShareToken(ownerToken, boardId, "EDITOR", 2, null);
 
         // First join succeeds
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", joiner2)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joiner2Token))
                 .andExpect(status().isOk());
 
         // Second join with same user → 409
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", joiner2)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joiner2Token))
                 .andExpect(status().isConflict());
     }
 
@@ -315,13 +344,12 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_ownerJoinsOwnBoard_returns409() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Owner Board");
-        String token = generateShareToken(OWNER, TENANT, boardId, "EDITOR", 1, null);
+        String boardId = createBoard(ownerToken, "Owner Board");
+        String token = generateShareToken(ownerToken, boardId, "EDITOR", 1, null);
 
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isConflict());
     }
 
@@ -336,14 +364,13 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_crossTenantUser_returns403() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Tenant A Board");
-        String token = generateShareToken(OWNER, TENANT, boardId, "EDITOR", null, null);
+        String boardId = createBoard(ownerToken, "Tenant A Board");
+        String token = generateShareToken(ownerToken, boardId, "EDITOR", null, null);
 
-        // JOINER is in OTHER_TENANT, not TENANT where the board lives
+        // otherTenantToken resolves to a user in a genuinely different tenant than the board's
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", JOINER)
-                                .header("X-Pivot-Tenant-Id", OTHER_TENANT))
+                                .header("Authorization", "Bearer " + otherTenantToken))
                 .andExpect(status().isForbidden());
     }
 
@@ -358,23 +385,22 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_rateLimitExceeded_returns429() throws Exception {
-        UUID heavyUser = UUID.randomUUID();
-        rateLimitService.resetUser(heavyUser);
+        long heavyUserId = newUserInTenant(tenantId);
+        String heavyUserToken = tokenFor(heavyUserId);
+        rateLimitService.resetUser(heavyUserId);
 
         // Exhaust the rate limit with invalid tokens (they still count against the limit)
         for (int i = 0; i < JoinRateLimitService.MAX_ATTEMPTS; i++) {
             mockMvc.perform(
                             post(JOIN_PATH + "?token=bogus-" + i)
-                                    .header("X-Pivot-User-Id", heavyUser)
-                                    .header("X-Pivot-Tenant-Id", TENANT))
+                                    .header("Authorization", "Bearer " + heavyUserToken))
                     .andExpect(status().isNotFound());
         }
 
         // 11th attempt → 429
         mockMvc.perform(
                         post(JOIN_PATH + "?token=bogus-overflow")
-                                .header("X-Pivot-User-Id", heavyUser)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + heavyUserToken))
                 .andExpect(status().isTooManyRequests());
     }
 
@@ -389,11 +415,10 @@ class BoardJoinControllerIT {
      */
     @Test
     void join_revokedToken_returns404() throws Exception {
-        String boardId = createBoard(OWNER, TENANT, "Revoke Board");
+        String boardId = createBoard(ownerToken, "Revoke Board");
         MvcResult shareResult = mockMvc.perform(
                         post(BOARDS_PATH + "/" + boardId + "/share")
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT)
+                                .header("Authorization", "Bearer " + ownerToken)
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"role\":\"EDITOR\"}"))
                 .andExpect(status().isCreated())
@@ -408,15 +433,13 @@ class BoardJoinControllerIT {
         mockMvc.perform(
                         org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                                 .delete(BOARDS_PATH + "/" + boardId + "/share/" + tokenId)
-                                .header("X-Pivot-User-Id", OWNER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + ownerToken))
                 .andExpect(status().isNoContent());
 
         // Join with revoked token → 404
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
-                                .header("X-Pivot-User-Id", JOINER)
-                                .header("X-Pivot-Tenant-Id", TENANT))
+                                .header("Authorization", "Bearer " + joinerToken))
                 .andExpect(status().isNotFound());
     }
 }
