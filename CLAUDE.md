@@ -265,6 +265,11 @@ version ni publier quoi que ce soit.
 
 Release-Trigger: true"` — trailer sur sa propre ligne finale, précédée d'une ligne vide, jamais
   intégré dans une phrase. Uniquement sur le merge identifié comme dernier item du sprint courant.
+- **Exception hors cycle (2026-07-09)** : première release jamais déclenchée sur ce repo,
+  immédiatement après le merge d'EN08.3 (`#46`, correctif de la faille d'authentification
+  cross-tenant IDOR). Aucune image `pivot-collaboratif-core` publiée à ce jour n'est saine —
+  déclenchement hors fin de sprint pour publier la première image corrigée, confirmation
+  explicite du mainteneur.
 
 ## Workflow — Autoloop PR
 
