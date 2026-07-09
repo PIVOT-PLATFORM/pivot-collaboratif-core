@@ -1,0 +1,140 @@
+name: DAST - Baseline Scan (staging)
+
+# Issue #41 (pivot-collaboratif-core) — port fidèle du couple dast-baseline.yml/dast-full.yml de
+# pivot-core (US05.13.1/US05.13.2, pivot-docs/docs/backlog/EPIC-cicd-supply-chain/ENABLERS/
+# us-zap-baseline.md) vers ce repo module (EPIC E30, noyau whiteboard F08.x/EN08.x). Ce repo
+# n'était encore couvert par aucun scan DAST alors qu'il expose désormais de vrais endpoints REST
+# sous `/api/collaboratif/**` (EN08.3 a corrigé un contournement d'authentification cross-tenant
+# sur ces mêmes endpoints, cf. issue fermée liée) — l'absence totale de scan dynamique était un
+# vrai gap, plus seulement un skeleton vide.
+#
+# Cible cross-repo — même design que pivot-core : ce workflow vit dans pivot-collaboratif-core
+# (Module: collaboratif) mais scanne une URL déployée par pivot-ui (l'app web réellement
+# exposée). D'après CLAUDE.md de ce repo, nginx route `/api/collaboratif/**` vers ce service
+# SANS réécriture de chemin, donc la même URL de staging pivot-ui expose aussi les endpoints de
+# ce repo — pas de secret/port dédié à créer, le même `STAGING_PIVOT_UI_URL` que pivot-core
+# couvre déjà la surface de ce module. Isolation par repo respectée : ce fichier ne fait QUE
+# piloter un scan HTTP externe en lecture seule, il ne modifie/ne déploie rien côté pivot-ui.
+#
+# Secret requis — GAP CONNU (vérifié à l'écriture de ce workflow, 2026-07 : même constat que
+# pivot-core — aucun environnement de staging réel n'existe encore côté pivot-ui, aucun workflow
+# `deploy-staging`/équivalent, aucune mention dans pivot-docs/docs/cicd/. Seul un `deploy.yml` de
+# PRODUCTION existe) :
+#   - STAGING_PIVOT_UI_URL : URL HTTPS de l'environnement de staging pivot-ui à scanner — secret
+#     à créer indépendamment dans CE repo (les secrets GitHub Actions ne sont pas partagés entre
+#     repos), même valeur que celle configurée côté pivot-core une fois l'infra de staging prête.
+#     Tant que ce secret n'est pas créé, le job se termine en succès dégradé avec un
+#     `::warning::` explicite plutôt qu'en échec silencieux ou en rouge permanent chaque nuit sans
+#     action possible (cf. step "Vérifier que le secret STAGING_PIVOT_UI_URL est configuré").
+#
+# Gate Medium+ — même raisonnement que pivot-core/.github/workflows/dast-baseline.yml : jq
+# custom plutôt que `fail_action` natif de zaproxy/action-baseline, car aucune règle ZAP n'a de
+# mapping natif risque→statut. Le job "gate" ci-dessous relit le rapport JSON et n'échoue que sur
+# `riskcode >= 2` (Medium/High) non listé en IGNORE dans `.zap/rules.tsv`.
+
+on:
+  schedule:
+    - cron: '50 2 * * *'   # Nightly, 02h50 UTC — décalé de security.yml (lundi 6h) et du
+                            # dast-baseline.yml de pivot-core (nightly, 02h30 UTC) pour ne pas
+                            # cumuler deux scans ZAP lourds simultanés sur la même cible staging
+                            # partagée, et du dast-baseline.yml mensuel de pivot-ui (1er du mois,
+                            # 3h).
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  zap-baseline:
+    name: ZAP Baseline - staging pivot-ui (collaboratif)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    outputs:
+      configured: ${{ steps.check-secret.outputs.configured }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Vérifier que le secret STAGING_PIVOT_UI_URL est configuré
+        id: check-secret
+        env:
+          STAGING_URL: ${{ secrets.STAGING_PIVOT_UI_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STAGING_URL}" ]; then
+            echo "::warning::Secret STAGING_PIVOT_UI_URL absent — aucun environnement de staging pivot-ui connu à ce jour (voir commentaire de tête de ce workflow). Scan ZAP sauté, job marqué succès dégradé. Créer ce secret dès que l'infra de staging pivot-ui existe."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Grant ZAP container write access to workspace
+        if: steps.check-secret.outputs.configured == 'true'
+        run: chmod a+w "$GITHUB_WORKSPACE"
+
+      - name: ZAP Baseline Scan
+        if: steps.check-secret.outputs.configured == 'true'
+        uses: zaproxy/action-baseline@7c4deb10e6261301961c86d65d54a516394f9aed # v0.14.0
+        with:
+          target: ${{ secrets.STAGING_PIVOT_UI_URL }}
+          rules_file_name: '.zap/rules.tsv'
+          fail_action: false
+          allow_issue_writing: false
+          artifact_name: zap-baseline-${{ github.run_number }}
+
+      - name: Upload ZAP report (HTML + JSON)
+        if: steps.check-secret.outputs.configured == 'true' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zap-baseline-report-${{ github.run_number }}
+          path: |
+            report_html.html
+            report_json.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Gate — alertes Medium+ bloquantes, sauf faux positifs triés dans .zap/rules.tsv
+      # (voir commentaire de tête du workflow pour le raisonnement complet).
+      - name: Gate — alertes Medium+ non triées
+        if: steps.check-secret.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+
+          REPORT="report_json.json"
+          RULES=".zap/rules.tsv"
+
+          if [ ! -f "${REPORT}" ]; then
+            echo "::error::${REPORT} introuvable — le scan ZAP n'a pas produit de rapport (cible STAGING_PIVOT_UI_URL injoignable ou scan en échec)."
+            exit 1
+          fi
+
+          # pluginid explicitement marqués IGNORE dans .zap/rules.tsv (faux positifs triés).
+          IGNORED_IDS=$(awk -F'\t' '$1 !~ /^#/ && $1 != "" && toupper($2) == "IGNORE" {print $1}' "${RULES}" | jq -R . | jq -s .)
+
+          # riskcode : 0=Informational 1=Low 2=Medium 3=High — bloquant à partir de Medium (>=2),
+          # sauf pluginid ignoré ci-dessus.
+          BLOCKING=$(jq --argjson ignored "${IGNORED_IDS}" '
+            [ .site[]?.alerts[]?
+                | select((.riskcode | tonumber) >= 2)
+                | select([.pluginid] - $ignored == [.pluginid])
+            ]' "${REPORT}")
+
+          COUNT=$(echo "${BLOCKING}" | jq 'length')
+          echo "Alertes Medium+ non triées : ${COUNT}"
+
+          if [ "${COUNT}" -gt 0 ]; then
+            echo "::error::${COUNT} alerte(s) ZAP Medium+ non triée(s) — voir .zap/rules.tsv pour classer un faux positif (jamais sans justification Red Team/Blue Team) :"
+            echo "${BLOCKING}" | jq -r '.[] | "  [\(.riskdesc)] pluginid=\(.pluginid) — \(.name)"'
+            exit 1
+          fi
+
+          echo "OK — aucune alerte Medium+ non triée."
