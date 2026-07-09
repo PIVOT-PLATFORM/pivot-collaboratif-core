@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Settings Maven committées — source unique de credentials GitHub Packages pour ce repo
-  (CI, build Docker, dev local). Chargé automatiquement par tout mvn/mvnw via
-  .mvn/maven.config ("--settings .mvn/settings.xml"), donc pas besoin de dupliquer la
-  configuration server-id dans chaque workflow ou étape.
+  (CI, build Docker, dev local). Chargé automatiquement par tout mvn/mvnw via l'option
+  settings de .mvn/maven.config, donc pas besoin de dupliquer la configuration server-id
+  dans chaque workflow ou étape.
 
   Aucun secret en dur : les deux <server> ci-dessous s'appuient sur des variables d'env
   résolues au runtime (${env.GITHUB_ACTOR} / ${env.GITHUB_TOKEN}) — absentes, elles
