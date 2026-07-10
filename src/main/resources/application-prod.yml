@@ -1,0 +1,28 @@
+# Profil de production (EN07.2, meme pattern que pivot-core) — active l'injection des secrets
+# applicatifs via Docker secrets (fichiers montes sous /run/secrets/), sans aucun secret en
+# clair dans docker-compose.prod.yml (pivot-core), les images, ou ce depot.
+#
+# Mecanisme : Spring Boot importe le contenu de chaque fichier du repertoire secrets comme
+# PropertySource ("configtree") — nom de fichier -> cle de propriete, contenu -> valeur.
+# `optional:` evite tout echec de demarrage si le repertoire est absent (dev local sous profil
+# prod sans secrets montes, CI, etc.). `${SECRET_FILE_PATH:/run/secrets}` : chemin racine
+# surchargeable (defaut = point de montage standard des Docker secrets).
+#
+# Convention de nommage des fichiers secrets : chaque fichier est nomme exactement comme la cle
+# "secret.*" referencee depuis application.yml (voir pivot-docs/docs/specs/EPIC-infrastructure/
+# en07-2-secret-management.md pour la table + procedure de rotation, partagee avec pivot-core).
+# Namespace "secret." dedie et distinct des cles Spring finales (ex. spring.datasource.password)
+# : elimine toute ambiguite de precedence entre la valeur importee du config tree et le
+# placeholder ${...} deja present dans application.yml — les deux ne partagent jamais la meme
+# cle.
+#
+# Fichier attendu ici : secret.datasource-password (monte par pivot-core's
+# docker-compose.prod.yml — service pivot-collaboratif-core, secret Docker `postgres_password`
+# cible sur `secret.datasource-password`, voir pivot-core#217).
+#
+# SECRET_FILE_PATH : ne pas terminer par "/" (deja ajoute ci-dessous) — un "/" final produirait
+# un chemin "//"-termine, sans effet fonctionnel (tolere par configtree/NIO) mais a eviter par
+# proprete. Exemple correct : SECRET_FILE_PATH=/run/secrets (pas /run/secrets/).
+spring:
+  config:
+    import: "optional:configtree:${SECRET_FILE_PATH:/run/secrets}/"
