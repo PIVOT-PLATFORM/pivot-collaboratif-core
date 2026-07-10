@@ -30,6 +30,12 @@ github:
         - docker/setup-buildx-action
         - docker/login-action
         - slsa-framework/slsa-github-generator
+        # Issue #41 — dast-baseline.yml (ZAP baseline scan staging pivot-ui), port fidèle de
+        # pivot-core/.plumber.yaml (US05.13.1)
+        - zaproxy/action-baseline
+        # Issue #41 — dast-full.yml (ZAP full scan authentifié staging pivot-ui), port fidèle de
+        # pivot-core/.plumber.yaml (US05.13.2)
+        - zaproxy/action-full-scan
 
     # --- Images : pas de tags mutables ---
     containerImageMustNotUseForbiddenTags:
