@@ -1,0 +1,242 @@
+name: DAST - Full Scan (staging, authentifie)
+
+# Issue #41 (pivot-collaboratif-core) — port fidele du couple dast-baseline.yml/dast-full.yml de
+# pivot-core (US05.13.1/US05.13.2, pivot-docs/docs/backlog/EPIC-cicd-supply-chain/ENABLERS/
+# us-zap-full-scan.md) vers ce repo module (EPIC E30, noyau whiteboard F08.x/EN08.x) : scan ZAP
+# full (actif) authentifie sur l'environnement de staging pivot-ui, par role (ROLE_USER +
+# ROLE_ADMIN). Ce repo expose desormais de vrais endpoints REST sous `/api/collaboratif/**`
+# (EN08.3 a corrige un contournement d'authentification cross-tenant sur ces memes endpoints,
+# cf. issue fermee liee) — l'absence totale de scan dynamique actif etait un vrai gap.
+#
+# Cible cross-repo — ce workflow vit dans pivot-collaboratif-core mais scanne une URL deployee
+# par pivot-ui (l'app web reellement exposee), meme design que dast-baseline.yml et que le
+# pendant pivot-core. D'apres CLAUDE.md de ce repo, nginx route `/api/collaboratif/**` vers ce
+# service SANS reecriture de chemin, donc la meme URL de staging pivot-ui expose aussi les
+# endpoints de ce repo — pas de cible dediee a inventer. L'authentification elle-meme reste
+# emise par le shell pivot-core (`/api/auth/login`, meme URL racine que la cible ZAP) : ce repo
+# ne fait que valider les tokens localement (EN08.3, ADR-022), il n'emet rien. Isolation par
+# repo respectee : ce fichier ne fait QUE piloter un scan HTTP externe authentifie en
+# lecture/exploitation active, il ne modifie/ne deploie rien cote pivot-ui.
+#
+# Full scan (actif) != baseline : le full scan tente une exploitation active (injection, XSS...)
+# authentifiee par role — jamais contre la production, uniquement staging, et jamais en cron
+# (workflow_dispatch manuel uniquement, meme AC que pivot-core).
+#
+# Secrets requis — GAP CONNU (verifie a l'ecriture de ce workflow, 2026-07 : meme constat que
+# dast-baseline.yml et que pivot-core — aucun environnement de staging reel n'existe encore cote
+# pivot-ui, aucun workflow deploy-staging/equivalent, aucune mention dans pivot-docs/docs/cicd/.
+# Seul un deploy.yml de PRODUCTION existe) :
+#   - STAGING_PIVOT_UI_URL              (partage avec dast-baseline.yml — a creer independamment
+#     dans CE repo, les secrets GitHub Actions ne sont pas partages entre repos)
+#   - STAGING_DAST_USER_EMAIL / STAGING_DAST_USER_PASSWORD   (compte ROLE_USER dedie au DAST)
+#   - STAGING_DAST_ADMIN_EMAIL / STAGING_DAST_ADMIN_PASSWORD (compte ROLE_ADMIN dedie au DAST)
+# Tant que ces secrets ne sont pas crees par le mainteneur (une fois l'infra de staging + les
+# comptes de test dedies provisionnes), chaque job du matrix se termine en succes degrade avec
+# un `::warning::` explicite plutot qu'en echec silencieux ou en rouge permanent. L'authentification
+# par role (header Authorization Bearer via ZAP_AUTH_HEADER*) est neanmoins entierement
+# configuree ci-dessous — seule l'execution reelle est suspendue tant que le staging n'existe pas.
+#
+# Issue High+ — meme raisonnement que pivot-core/.github/workflows/dast-full.yml : jq custom
+# plutot que le token natif de zaproxy/action-full-scan, qui cree une issue pour TOUTE alerte
+# sans notion de "nouvelle". Le job process-alerts ci-dessous ne cree une issue que pour les
+# alertes riskcode >= 3 (High) non deja triees en IGNORE dans .zap/rules.tsv ET pas deja suivies
+# par une issue ouverte existante (dedup par titre, label dast-full-high) — issues creees dans CE
+# repo (${GITHUB_REPOSITORY} resolu au repo courant, pivot-collaboratif-core).
+
+on:
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # -----------------------------------------
+  # SCAN — matrix ROLE_USER / ROLE_ADMIN
+  # -----------------------------------------
+  zap-full-scan:
+    name: ZAP Full Scan - ${{ matrix.role }}
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [user, admin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verifier que les secrets staging sont configures
+        id: check-secrets
+        env:
+          STAGING_URL: ${{ secrets.STAGING_PIVOT_UI_URL }}
+          DAST_EMAIL: ${{ matrix.role == 'admin' && secrets.STAGING_DAST_ADMIN_EMAIL || secrets.STAGING_DAST_USER_EMAIL }}
+          DAST_PASSWORD: ${{ matrix.role == 'admin' && secrets.STAGING_DAST_ADMIN_PASSWORD || secrets.STAGING_DAST_USER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STAGING_URL}" ] || [ -z "${DAST_EMAIL}" ] || [ -z "${DAST_PASSWORD}" ]; then
+            echo "::warning::Secrets staging absents (STAGING_PIVOT_UI_URL / STAGING_DAST_$(echo ${{ matrix.role }} | tr '[:lower:]' '[:upper:]')_EMAIL / _PASSWORD) — aucun environnement de staging pivot-ui connu a ce jour (voir commentaire de tete de ce workflow). Scan ZAP full ${{ matrix.role }} saute, job marque succes degrade. Creer ces secrets des que l'infra de staging + comptes DAST dedies existent."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authentification - ${{ matrix.role }}
+        id: auth
+        if: steps.check-secrets.outputs.configured == 'true'
+        env:
+          STAGING_URL: ${{ secrets.STAGING_PIVOT_UI_URL }}
+          DAST_EMAIL: ${{ matrix.role == 'admin' && secrets.STAGING_DAST_ADMIN_EMAIL || secrets.STAGING_DAST_USER_EMAIL }}
+          DAST_PASSWORD: ${{ matrix.role == 'admin' && secrets.STAGING_DAST_ADMIN_PASSWORD || secrets.STAGING_DAST_USER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          RESPONSE=$(curl -fsS -X POST "${STAGING_URL%/}/api/auth/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"${DAST_EMAIL}\",\"password\":\"${DAST_PASSWORD}\"}")
+          TOKEN=$(echo "${RESPONSE}" | jq -r '.accessToken // empty')
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::Authentification ${{ matrix.role }} echouee sur ${STAGING_URL%/}/api/auth/login — reponse sans accessToken."
+            exit 1
+          fi
+          echo "::add-mask::${TOKEN}"
+          echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+
+      - name: Configurer l'authentification ZAP - ${{ matrix.role }}
+        if: steps.check-secrets.outputs.configured == 'true'
+        env:
+          STAGING_URL: ${{ secrets.STAGING_PIVOT_UI_URL }}
+          AUTH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "ZAP_AUTH_HEADER=Authorization"
+            echo "ZAP_AUTH_HEADER_VALUE=Bearer ${AUTH_TOKEN}"
+            echo "ZAP_AUTH_HEADER_SITE=${STAGING_URL%/}"
+          } >> "$GITHUB_ENV"
+
+      - name: Grant ZAP container write access to workspace
+        if: steps.check-secrets.outputs.configured == 'true'
+        run: chmod a+w "$GITHUB_WORKSPACE"
+
+      - name: ZAP Full Scan - ${{ matrix.role }}
+        if: steps.check-secrets.outputs.configured == 'true'
+        uses: zaproxy/action-full-scan@75ee1686750ab1511a73b26b77a2aedd295053ed # v0.12.0
+        with:
+          target: ${{ secrets.STAGING_PIVOT_UI_URL }}
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-j -z "-config scanner.threadPerHost=2"'
+          fail_action: false
+          allow_issue_writing: false
+          artifact_name: zap-full-${{ matrix.role }}-${{ github.run_number }}
+
+      - name: Upload rapport ZAP - ${{ matrix.role }}
+        if: steps.check-secrets.outputs.configured == 'true' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zap-full-report-${{ matrix.role }}-${{ github.run_number }}
+          path: |
+            report_html.html
+            report_json.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # -----------------------------------------
+  # ISSUE AUTOMATIQUE — nouvelles alertes High+
+  # -----------------------------------------
+  process-alerts:
+    name: Analyse alertes High+ (issue si nouvelles)
+    needs: zap-full-scan
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Telecharger les rapports ZAP (si presents)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          pattern: zap-full-report-*-${{ github.run_number }}
+          path: zap-reports
+          merge-multiple: false
+
+      - name: Assurer l'existence du label dast-full-high
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "dast-full-high" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --color B60205 \
+            --description "Alerte ZAP DAST full scan (issue #41), risque High" \
+            --force
+
+      - name: Detecter les nouvelles alertes High et creer une issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          RULES=".zap/rules.tsv"
+          IGNORED_IDS="[]"
+          if [ -f "${RULES}" ]; then
+            IGNORED_IDS=$(awk -F'\t' '$1 !~ /^#/ && $1 != "" && toupper($2) == "IGNORE" {print $1}' "${RULES}" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+          fi
+
+          EXISTING=$(gh issue list --repo "${GITHUB_REPOSITORY}" --label dast-full-high --state open --json title --jq '.[].title' 2>/dev/null || true)
+
+          NEW_COUNT=0
+
+          for REPORT_DIR in zap-reports/zap-full-report-*/ ; do
+            [ -d "${REPORT_DIR}" ] || continue
+            ROLE=$(basename "${REPORT_DIR}" | sed -E 's/zap-full-report-(user|admin)-.*/\1/')
+            REPORT="${REPORT_DIR}report_json.json"
+            [ -f "${REPORT}" ] || continue
+
+            mapfile -t ALERTS < <(jq -r --argjson ignored "${IGNORED_IDS}" '
+              .site[]?.alerts[]?
+                | select((.riskcode // "0" | tonumber) >= 3)
+                | select([.pluginid] - $ignored == [.pluginid])
+                | .name
+            ' "${REPORT}" 2>/dev/null | sort -u)
+
+            for ALERT in "${ALERTS[@]:-}"; do
+              [ -z "${ALERT}" ] && continue
+              TITLE="[DAST][full-scan][${ROLE}] Alerte High : ${ALERT}"
+              if echo "${EXISTING}" | grep -qxF "${TITLE}"; then
+                echo "Deja suivie (issue ouverte existante) : ${TITLE}"
+                continue
+              fi
+
+              DETAILS=$(jq -r --arg name "${ALERT}" '
+                [.site[]?.alerts[]? | select(.name == $name)][0] |
+                "**Risque:** \(.riskdesc // "n/a")\n**CWE:** \(.cweid // "n/a")\n**Instances:** \(.instances | length)\n\n**Description:**\n\(.desc // "" | gsub("<[^>]*>"; ""))\n\n**Remediation:**\n\(.solution // "" | gsub("<[^>]*>"; ""))\n"
+              ' "${REPORT}" 2>/dev/null || echo "Detail indisponible — voir le rapport JSON en artefact.")
+
+              NEW_COUNT=$((NEW_COUNT + 1))
+              gh issue create --repo "${GITHUB_REPOSITORY}" \
+                --title "${TITLE}" \
+                --label "security,dast-full-high" \
+                --body "$(printf '%s\n\n---\nRole scanne : %s\nRun : %s/%s/actions/runs/%s\n\nCe scan est un faux positif ? Ajouter le pluginid correspondant en IGNORE dans .zap/rules.tsv (jamais sans justification Expert Red Team / Blue Team, voir CLAUDE.md).' "${DETAILS}" "${ROLE}" "${GITHUB_SERVER_URL}" "${GITHUB_REPOSITORY}" "${GITHUB_RUN_ID}")"
+            done
+          done
+
+          if [ "${NEW_COUNT}" -eq 0 ]; then
+            echo "Aucune nouvelle alerte High non deja suivie (ou aucun rapport disponible — staging non configure)."
+          else
+            echo "${NEW_COUNT} nouvelle(s) issue(s) High creee(s)."
+          fi

@@ -1,0 +1,15 @@
+# ZAP DAST Rules — PIVOT-COLLABORATIF-CORE
+# Partagé par dast-baseline.yml et dast-full.yml (issue #41, port fidèle de pivot-core
+# US05.13.1/US05.13.2) — les deux scannent la même application (staging pivot-ui, qui expose
+# aussi ce module sous /api/collaboratif/** via nginx sans réécriture de chemin), donc la même
+# liste de pluginid ZAP triés comme faux positifs s'applique aux deux.
+#
+# Format : <pluginid>	<action>	<comment>
+# Actions reconnues par zap-baseline.py / zap-full-scan.py : IGNORE | WARN | FAIL | INFO
+#   - IGNORE : faux positif trié — exclu du gate Medium+ (job "gate" de dast-baseline.yml) ET
+#     du job "process-alerts" (issue si nouvelle alerte High, dast-full.yml)
+#   - WARN   : comportement par défaut ZAP si absent de ce fichier (n'affecte aucun des deux gates)
+#
+# Aucun faux positif trié à ce jour — première mise en place des scans (issue #41).
+# Ajouter une ligne ici dès qu'une alerte Medium+/High est triée comme non pertinente pour PIVOT,
+# jamais pour la faire disparaître sans justification (cf. Expert Red Team / Blue Team).
