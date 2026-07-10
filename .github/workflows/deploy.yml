@@ -57,23 +57,19 @@ name: Deploy
 # premier run réel plutôt que supposé fonctionnel.
 #
 # Cible du smoke test — port ET chemin vérifiés dans le code réel de ce repo (pas supposés) :
-#   - Port 8083 (pas 9083) : `management.server.port` n'est PAS configuré dans
-#     `application.yml` — Actuator tourne donc sur le MÊME port que l'application (8083), pas
-#     sur un port de management dédié. Le tableau de ports documenté dans
-#     `pivot-core/docker-compose.prod.yml` (9083 pour ce module) décrit une convention CIBLE,
-#     pas l'état actuel de ce repo — écart à corriger dans un futur Enabler dédié (aligner sur
-#     le pattern EN04.2 de pivot-core : management.server.port séparé), pas dans cette PR.
-#   - Chemin `/api/collaboratif/actuator/health` (pas `/actuator/health/readiness`, pas
-#     `/actuator/health` nu) : deux raisons combinées, toutes deux vérifiées dans le code —
-#     (1) aucun groupe `readiness` n'est configuré (`management.endpoint.health.group.*`
-#     absent de `application.yml`, seuls `health,info,prometheus` sont exposés) → repli sur le
-#     groupe racine `/actuator/health`, exactement comme demandé si le groupe dédié n'existe
-#     pas encore ; (2) tant qu'aucun `management.server.port` séparé n'existe (point ci-dessus),
-#     Actuator tourne sur le MÊME serveur applicatif que le reste de l'API et hérite donc de
-#     `server.servlet.context-path: /api/collaboratif` — précédent identique déjà documenté
-#     dans `pivot-core/docker-compose.prod.yml` (commentaire EN04.4 : le chemin sans
-#     management.server.port dédié était `http://localhost:8080/api/actuator/health`, jamais
-#     `http://localhost:8080/actuator/health`).
+#   - Port 9083 (pas 8083) : `management.server.port: ${MANAGEMENT_SERVER_PORT:9083}` est
+#     configuré dans `application.yml` depuis #57 (EN04.2 — port de management Actuator séparé
+#     du port applicatif 8083), qui a fusionné APRÈS l'implémentation initiale de cette PR.
+#     Rebasé sur `main` pour refléter l'état réel du repo — le tableau de ports documenté dans
+#     `pivot-core/docker-compose.prod.yml` (9083 pour ce module) est maintenant vrai ici aussi,
+#     pas seulement une convention cible.
+#   - Chemin `/actuator/health` SANS le préfixe `/api/collaboratif` : quand
+#     `management.server.port` diffère de `server.port`, Spring Boot n'applique PAS
+#     `server.servlet.context-path` au contexte de servlet management (distinct du contexte
+#     applicatif) — confirmé par le commentaire `application.yml` ajouté en #57. Pas de groupe
+#     `/actuator/health/readiness` : `management.endpoint.health.group.*` reste absent
+#     d'`application.yml` (seuls `health,info,prometheus` sont exposés) → groupe racine
+#     `/actuator/health`, seul disponible.
 
 on:
   release:
@@ -203,17 +199,16 @@ jobs:
             NEW_VERSION="${PIVOT_COLLABORATIF_CORE_VERSION}"
             PREVIOUS_VERSION="$(cat "${VERSION_FILE}" 2>/dev/null || true)"
 
-            # Port 8083 (pas 9083) + chemin /api/collaboratif/actuator/health (pas
-            # /actuator/health/readiness) : voir le commentaire de tête de ce fichier — aucun
-            # management.server.port dédié ni groupe "readiness" n'existe encore dans
-            # application.yml de ce repo, vérifié dans le code au moment de cette PR (pas
-            # supposé). `docker compose exec` exécute curl à l'intérieur du conteneur (présent
-            # dans l'image, cf. Dockerfile) — pas de dépendance à un accès réseau depuis le
-            # runner GitHub ni depuis l'hôte, port de management jamais publié.
+            # Port 9083 (management.server.port, #57) + chemin /actuator/health sans le
+            # préfixe /api/collaboratif — voir le commentaire de tête de ce fichier. Groupe
+            # "readiness" toujours absent d'application.yml, repli sur le groupe racine.
+            # `docker compose exec` exécute curl à l'intérieur du conteneur (présent dans
+            # l'image, cf. Dockerfile) — pas de dépendance à un accès réseau depuis le runner
+            # GitHub ni depuis l'hôte, port de management jamais publié côté compose.
             smoke_test() {
               for _ in $(seq 1 10); do
                 if docker compose -f docker-compose.prod.yml exec -T pivot-collaboratif-core \
-                    curl -fsS -m 5 http://localhost:8083/api/collaboratif/actuator/health 2>/dev/null \
+                    curl -fsS -m 5 http://localhost:9083/actuator/health 2>/dev/null \
                     | grep -q '"status":"UP"'; then
                   return 0
                 fi
