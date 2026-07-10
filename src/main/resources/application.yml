@@ -8,7 +8,14 @@ spring:
     # jamais sa propre base.
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/pivot}
     username: ${SPRING_DATASOURCE_USERNAME:pivot}
-    password: ${SPRING_DATASOURCE_PASSWORD:pivot}
+    # EN07.2 — Docker secret en prod : ${SECRET_FILE_PATH}/secret.datasource-password (cf.
+    # application-prod.yml, meme mecanisme configtree que pivot-core, EN07.2 de ce repo). Le
+    # relaxed binding Spring Boot fait deja gagner SPRING_DATASOURCE_PASSWORD sur une valeur en
+    # dur sans placeholder — le role du placeholder ici n'est pas d'activer cette precedence
+    # (deja acquise), mais d'ouvrir un second niveau de repli vers secret.datasource-password
+    # quand la variable d'env est absente. Ordre effectif : env var (dev/compose) > Docker
+    # secret (prod) > defaut local "pivot".
+    password: ${SPRING_DATASOURCE_PASSWORD:${secret.datasource-password:pivot}}
     driver-class-name: org.postgresql.Driver
 
   jpa:
