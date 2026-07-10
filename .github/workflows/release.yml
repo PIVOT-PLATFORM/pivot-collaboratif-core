@@ -40,6 +40,11 @@ jobs:
   # -----------------------------------------
   # 1. PREPARE — calcule la version SANS créer la release (dry-run).
   #    Permissions minimales (contents: read). ISO pivot-ui.
+  #
+  #    SEMANTIC_RELEASE_TOKEN (ici et dans le job `release` ci-dessous) est un PAT longue durée,
+  #    pas secrets.GITHUB_TOKEN : le commit de release doit re-déclencher les workflows en aval,
+  #    ce que GITHUB_TOKEN ne permet pas nativement. Politique de rotation/scope de ce token :
+  #    voir SECURITY.md, section "Secrets longue durée — rotation".
   # -----------------------------------------
   prepare:
     name: Compute release version

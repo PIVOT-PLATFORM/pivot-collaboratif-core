@@ -1,90 +1,24 @@
 # TODO — Setup manuel restant (pivot-collaboratif-core)
 
-## ⚠️ BLOQUANT #1 — Branch protection / rulesets PAS appliqués (à faire en premier)
+## ✅ Branch protection / ruleset `protect-main` — résolu
 
-Le code, la CI/CD, la sécurité et la documentation sont bootstrappés et pushés sur `main`. **Mais
-ni la branch protection classique, ni AUCUN ruleset n'ont pu être créés depuis cette session** —
-l'API GitHub a refusé toute tentative de création (PUT `branches/main/protection` **et** POST
-`/rulesets`) avec :
+Historique (pour mémoire) : au bootstrap initial, ni la branch protection classique ni aucun
+ruleset n'avaient pu être créés depuis la session d'alors — l'API GitHub refusait toute tentative
+d'écriture (PUT `branches/main/protection` et POST `/rulesets`) avec une erreur 403 "Upgrade to
+GitHub Pro…", ce qui pointait vers une restriction de plan/billing de l'organisation plutôt qu'un
+problème de scope de token.
 
-```
-403 — "Upgrade to GitHub Pro or make this repository public to enable this feature."
-```
+**Vérifié le 2026-07-10 — les deux mécanismes sont désormais actifs sur `main` :**
+- Branch protection classique
+  (`gh api repos/PIVOT-PLATFORM/pivot-collaboratif-core/branches/main/protection`) : 1 review
+  requise, 4 checks requis (`Code Quality - Java`, `Tests Backend (TU + TI)`,
+  `Maven deploy preview (PR)`, `Docker preview image (PR)`).
+- Ruleset `protect-main` (`gh api repos/PIVOT-PLATFORM/pivot-collaboratif-core/rulesets`) :
+  id `18556608`, `enforcement: active`, créé le 2026-07-06.
 
-Constats faits pendant le bootstrap (pour diagnostiquer, pas juste "réessayer") :
-- **Lecture** des rulesets existants sur `pivot-core`/`pivot-ui` : ✅ fonctionne (utilisé pour
-  produire ce document).
-- **Écriture** (PUT protection / POST ruleset) sur `pivot-collaboratif-core` **et**
-  `pivot-collaboratif-ui` : ❌ même erreur 403 sur les deux repos.
-- Le header `x-accepted-github-permissions: administration=write` est présent sur la requête —
-  mais le message d'erreur retourné est le message spécifique "Upgrade to GitHub Pro…", **pas**
-  le message générique `"Resource not accessible by personal access token"` observé ailleurs
-  dans cette session pour de vrais manques de scope (ex. lecture des secrets organisation) — ce
-  qui pointe vers une restriction de **plan/billing** plutôt qu'un problème de token.
-- `PATCH` sur le repo (changer `default_branch`) et suppression de refs ont fonctionné avec le
-  même token → le token a bien des droits d'administration générale sur le repo, ce qui rend
-  d'autant plus surprenant le blocage spécifique à branch-protection/rulesets.
-- Autre piste possible (non vérifiée) : org avec un nombre de repos "protégés" limité par le
-  plan actuel, déjà atteint par `pivot-core` + `pivot-ui` + les autres repos de la plateforme.
-
-**Action requise du mainteneur** : vérifier le plan GitHub de l'organisation PIVOT-PLATFORM
-(Settings → Billing) et/ou les permissions du token/app utilisé pour l'administration des repos,
-puis exécuter les commandes ci-dessous (prêtes à copier-coller, non testées faute d'accès) une
-fois débloqué.
-
-### Commandes prêtes à l'emploi une fois débloqué
-
-**1. Branch protection classique** (1 review, 4 checks self-contained) :
-```bash
-cat > /tmp/protection-collaboratif-core.json << 'EOF'
-{
-  "required_status_checks": {
-    "strict": false,
-    "contexts": [
-      "Code Quality - Java",
-      "Tests Backend (TU + TI)",
-      "Maven deploy preview (PR)",
-      "Docker preview image (PR)"
-    ]
-  },
-  "enforce_admins": false,
-  "required_pull_request_reviews": {
-    "dismiss_stale_reviews": false,
-    "require_code_owner_reviews": false,
-    "required_approving_review_count": 1,
-    "require_last_push_approval": false
-  },
-  "restrictions": null,
-  "required_linear_history": false,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "block_creations": false,
-  "required_conversation_resolution": false,
-  "lock_branch": false,
-  "allow_fork_syncing": false
-}
-EOF
-gh api repos/PIVOT-PLATFORM/pivot-collaboratif-core/branches/main/protection -X PUT --input /tmp/protection-collaboratif-core.json
-```
-
-**2. Ruleset `protect-main`** (deletion / non-fast-forward / historique linéaire — identique à
-`pivot-core`) :
-```bash
-cat > /tmp/ruleset-protect-main-collaboratif-core.json << 'EOF'
-{
-  "name": "protect-main",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["refs/heads/main"], "exclude": [] } },
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_linear_history" }
-  ]
-}
-EOF
-gh api repos/PIVOT-PLATFORM/pivot-collaboratif-core/rulesets -X POST --input /tmp/ruleset-protect-main-collaboratif-core.json
-```
+Aucune action mainteneur restante sur ce point précis. Le ruleset **complet** (tous les checks
+sécurité en required — SAST/Sonar/Plumber, voir section suivante) reste, lui, un gap réel, non
+couvert par ce qui précède.
 
 ---
 
@@ -139,13 +73,9 @@ identique à `pivot-core` et n'empêche pas les permissions explicites déclaré
 - `Maven deploy preview (PR)` (déploie une version PR-scoped vers GitHub Packages)
 - `Docker preview image (PR)` (build + scan Trivy + push GHCR)
 
-## Autre dépendance externe au module (pas un TODO CI/CD, mais bloquant pour le dev réel)
+## ✅ Dépendance `pivot-core-starter` — résolu
 
-`fr.pivot:pivot-core-starter` n'est pas encore publié par `pivot-core` (son `pom.xml` publie
-`fr.pivot:pivot-core`, pas un artefact "starter" séparé). Le développement réel des US du domaine
-Collaboratif (whiteboard, quiz, session live, formulaire) ne peut pas brancher la sécurité
-(opaque tokens, `TenantContext`) tant que ce starter n'est pas publié comme artefact Maven
-consommable indépendamment — voir `CLAUDE.md`, section "Dépendance pivot-core-starter — état
-réel", et le pré-requis explicite noté dans `pivot-docs/docs/backlog/EPIC-collaboration/README.md`
-(EPIC E30 : *"Pré-requis EN17 : pivot-core-starter + @pivot/ui-core publiés avant
-implémentation"*).
+`fr.pivot:pivot-core-starter` est publié par `pivot-core` depuis la version 0.27.0 (épinglé ici à
+0.27.1) et déclaré dans `pom.xml`. L'authentification réelle (opaque tokens, EN08.3) est branchée
+dessus — voir `CLAUDE.md`, section "Dépendance pivot-core-starter — état réel". Ce n'est plus un
+bloquant pour le développement réel des US du domaine Collaboratif.
