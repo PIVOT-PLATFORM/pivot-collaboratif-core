@@ -14,7 +14,7 @@ session live, formulaire. Schéma PostgreSQL dédié : `collaboratif`.
 
 > **Statut : bootstrap.** Ce repo contient le squelette (build, CI/CD, sécurité) — aucune
 > feature métier n'est encore implémentée. Voir [`CLAUDE.md`](CLAUDE.md) pour l'état exact des
-> dépendances plateforme (`fr.pivot:pivot-core-starter` pas encore publié) et
+> dépendances plateforme (`fr.pivot:pivot-core-starter` publié et branché depuis EN08.3) et
 > [`TODO-SETUP.md`](TODO-SETUP.md) pour ce qu'il reste à configurer manuellement.
 
 Frontend associé : [`pivot-collaboratif-ui`](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-ui).

@@ -120,13 +120,13 @@ Toute contribution mobilise les experts concernés — les mentionner explicitem
 | **Architecte Temps Réel / WebSocket** | STOMP, isolation par room/board (`EN08.1`), relai ActiveMQ, présence, scalabilité multi-instance |
 | **Expert DevSecOps** | CI/CD GitHub Actions, SonarCloud, Semgrep, Gitleaks, Plumber, SBOM, Semantic Release |
 | **Expert Red Team** | Injection via messages WebSocket, IDOR cross-board, cross-tenant, CSRF |
-| **Expert Blue Team** | Spring Security hardening (une fois branché), CORS, audit log, réponse aux rapports Red Team |
-| **Expert OIDC / IAM** | Consommation du contrat `pivot-core-starter` une fois publié — validation opaque tokens, `TenantContext` |
+| **Expert Blue Team** | Spring Security hardening (branché depuis EN08.3), CORS, audit log, réponse aux rapports Red Team |
+| **Expert OIDC / IAM** | Consommation du contrat `pivot-core-starter` (publié et branché depuis EN08.3) — validation opaque tokens, `TenantContext` |
 | **Expert QA** | Stratégie TU/TI, Testcontainers, coverage ≥ 85 %, non-régression temps réel (latence, perte de paquets) |
 | **Expert RGPD** | Contenu utilisateur sur les boards/formulaires, droits des personnes, export/suppression |
 | **Product Owner** | Backlog markdown pivot-docs (EPIC E30), Epics, US, critères d'acceptation, priorisation |
 | **Scrum Master** | Coordination, sprints, impediments, backlog consistency |
-| **Architecte Modules** | Implémentation de `PivotModule` une fois `pivot-core-starter` consommable, isolation inter-modules |
+| **Architecte Modules** | Implémentation de `PivotModule` (`pivot-core-starter` consommable depuis EN08.3), isolation inter-modules |
 | **Expert PR Review** | Relecture croisée neutre : architecture, lisibilité, dette technique, respect des standards PIVOT |
 | **Experts Angular / UX/UI** | → **pivot-collaboratif-ui** |
 
