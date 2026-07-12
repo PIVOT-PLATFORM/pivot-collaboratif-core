@@ -35,14 +35,38 @@ Backlog : [`pivot-docs`](https://github.com/PIVOT-PLATFORM/pivot-docs) — EPIC 
 
 ## Démarrage local
 
+> **Credentials GitHub Packages requis.** Ce module dépend du package privé
+> `fr.pivot:pivot-core-starter` (GitHub Packages, Maven). Toute résolution Maven — sur l'hôte
+> comme dans le build Docker — exige des credentials, lus par `.mvn/settings.xml` depuis
+> `GITHUB_ACTOR` / `GITHUB_TOKEN` (un login GitHub + un PAT `read:packages`, ou `gh auth token`) :
+> ```bash
+> export GITHUB_ACTOR="$(gh api user -q .login)"
+> export GITHUB_TOKEN="$(gh auth token)"
+> ```
+
+**Option A — backend sur l'hôte (infra en conteneurs) :**
+
 ```bash
 cp .env.example .env
 docker compose up -d postgres redis
-./mvnw spring-boot:run
+./mvnw spring-boot:run          # nécessite GITHUB_ACTOR/GITHUB_TOKEN exportés (cf. ci-dessus)
+```
+
+**Option B — tout en conteneurs :** `compose.yml` build le backend depuis le Dockerfile (secrets
+BuildKit `github_actor`/`github_token`, sourcés du shell) :
+
+```bash
+docker compose up -d --build     # GITHUB_ACTOR/GITHUB_TOKEN exportés dans le shell
 ```
 
 - API : <http://localhost:8083/api/collaboratif>
-- Healthcheck : <http://localhost:8083/api/collaboratif/actuator/health>
+- Healthcheck : <http://localhost:9083/actuator/health> — l'Actuator est sur un **port de
+  management séparé** (`management.server.port=9083`, EN04.2), avec context racine : quand ce port
+  diffère de `server.port`, Spring Boot n'applique **pas** `server.servlet.context-path` aux
+  endpoints Actuator (donc `/actuator/health`, pas `/api/collaboratif/actuator/health`).
+
+> Pour lancer ce module **intégré à toute la plateforme** (aux côtés de pivot-core, des autres
+> modules et du frontend), voir plutôt `pivot-core/README.md` §Développement local.
 
 ## Pipeline CI/CD
 

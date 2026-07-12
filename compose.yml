@@ -34,6 +34,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # This module's Dockerfile resolves the private fr.pivot:pivot-core-starter (GitHub
+      # Packages, Maven) at build time and needs GitHub credentials — same secret ids read by
+      # .mvn/settings.xml (${env.GITHUB_ACTOR} / ${env.GITHUB_TOKEN}) as in CI. Sourced here from
+      # the host shell: GITHUB_ACTOR = your GitHub username, GITHUB_TOKEN = a PAT with
+      # read:packages (or `gh auth token`). Never committed. See README §Développement local.
+      secrets:
+        - github_actor
+        - github_token
     container_name: pivot-collaboratif-backend
     ports:
       - "8083:8083"
@@ -67,3 +75,12 @@ services:
 
 volumes:
   postgres_data:
+
+secrets:
+  # Build-time GitHub Packages (Maven) credentials for fr.pivot:pivot-core-starter — read from
+  # the shell running `docker compose`. GITHUB_ACTOR = GitHub username, GITHUB_TOKEN = PAT with
+  # read:packages (or `gh auth token`). See README §Développement local.
+  github_actor:
+    environment: GITHUB_ACTOR
+  github_token:
+    environment: GITHUB_TOKEN
