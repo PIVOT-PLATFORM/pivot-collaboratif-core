@@ -22,6 +22,10 @@ github:
       trustGithubOfficialActions: true
       trustSameOrgActions: true
       trustedGithubActions:
+        # managed-min Cloud Run deploy (WIF keyless auth + orchestrator dispatch)
+        - google-github-actions/auth
+        - google-github-actions/setup-gcloud
+        - peter-evans/repository-dispatch
         - aquasecurity/trivy-action
         - ossf/scorecard-action
         - gitleaks/gitleaks-action
