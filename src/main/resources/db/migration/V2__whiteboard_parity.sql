@@ -13,8 +13,11 @@
 
 -- US08.1.8: accent-insensitive search (title/description) needs the unaccent() function.
 -- Standard PostgreSQL contrib extension, available on Cloud SQL for PostgreSQL without
--- extra flags/superuser grants (allow-listed extension).
-CREATE EXTENSION IF NOT EXISTS unaccent;
+-- extra flags/superuser grants (allow-listed extension). Installed explicitly into the
+-- shared `public` schema so the function resolves regardless of the connection search_path
+-- (Flyway/Hibernate both run with default_schema=collaboratif, which would otherwise place
+-- and hide the function inside `collaboratif`). The query references it as `public.unaccent`.
+CREATE EXTENSION IF NOT EXISTS unaccent SCHEMA public;
 
 -- US08.1.7: soft-delete support on board.
 ALTER TABLE collaboratif.board
