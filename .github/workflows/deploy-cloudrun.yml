@@ -1,0 +1,48 @@
+name: Deploy (Cloud Run)
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to deploy
+        required: true
+permissions: read-all
+concurrency:
+  group: deploy-cloudrun-notify
+  cancel-in-progress: false
+jobs:
+  notify-orchestrator:
+    name: Resolve digest & notify orchestrator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SERVICE: pivot-collaboratif-core
+      VERSION: ${{ github.event.release.tag_name && github.event.release.tag_name || inputs.version }}
+    steps:
+      - name: Authenticate to GCP (keyless / WIF)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOYER_SA }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Resolve immutable digest for this version
+        id: digest
+        run: |
+          VER="${VERSION#v}"
+          DIGEST=$(gcloud artifacts docker images describe "${{ vars.IMAGE }}:${VER}" --format='value(image_summary.digest)')
+          if [ -z "${DIGEST}" ]; then echo "::error::No digest for ${{ vars.IMAGE }}:${VER}"; exit 1; fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Dispatch to pivot-infra orchestrator
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.ORCHESTRATOR_DISPATCH_TOKEN }}
+          repository: PIVOT-PLATFORM/pivot-infra
+          event-type: deploy-service
+          client-payload: |
+            {"service": "${{ env.SERVICE }}", "image": "${{ vars.IMAGE }}", "digest": "${{ steps.digest.outputs.digest }}", "version": "${{ env.VERSION }}"}
