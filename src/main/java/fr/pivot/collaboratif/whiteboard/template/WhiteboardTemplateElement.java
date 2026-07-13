@@ -15,9 +15,11 @@ import java.util.UUID;
 /**
  * JPA entity representing a single drawable element of a whiteboard template (US08.4.1).
  *
- * <p>Rows are exclusively seeded via Flyway ({@code V1__schema_init.sql}); there is no
- * user-facing authoring endpoint in the Socle (see the US "Hors périmètre" section). At
- * board-initialization time, each element is converted into a persisted
+ * <p>Global template rows are exclusively seeded via Flyway ({@code V1__schema_init.sql});
+ * there is no user-facing authoring endpoint for <em>global</em> templates in the Socle (see
+ * the US "Hors périmètre" section). US08.2.4 ("save as template") introduces application-
+ * created rows for tenant-owned templates, snapshotting a board's current {@code DRAW}
+ * canvas events. At board-initialization time, each element is converted into a persisted
  * {@code CanvasEvent} of type {@code DRAW} on the new board (see
  * {@code WhiteboardTemplateService#initializeBoard}), after being re-validated by
  * {@code CanvasElementValidator} against the same strict shape/text/image whitelist.
@@ -57,6 +59,29 @@ public class WhiteboardTemplateElement {
 
     /** No-arg constructor required by JPA. */
     protected WhiteboardTemplateElement() {
+    }
+
+    /**
+     * Creates a new template element — used by the "save as template" flow (US08.2.4) to
+     * snapshot a board's current canvas content.
+     *
+     * @param id           server-generated UUID
+     * @param templateId   owning template's UUID
+     * @param elementType  whitelisted element kind
+     * @param payload      JSON payload string (already validated upstream)
+     * @param displayOrder ordering position, preserving the original canvas event order
+     */
+    public WhiteboardTemplateElement(
+            final UUID id,
+            final UUID templateId,
+            final CanvasElementType elementType,
+            final String payload,
+            final int displayOrder) {
+        this.id = id;
+        this.templateId = templateId;
+        this.elementType = elementType;
+        this.payload = payload;
+        this.displayOrder = displayOrder;
     }
 
     /**

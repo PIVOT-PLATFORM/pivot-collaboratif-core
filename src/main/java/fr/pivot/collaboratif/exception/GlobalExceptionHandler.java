@@ -18,6 +18,7 @@ import java.util.Map;
  * {@link BoardAccessDeniedException}, {@link WhiteboardModuleDisabledException},
  * {@link BoardShareTokenNotFoundException}, {@link BoardShareTokenExpiredException},
  * {@link BoardAlreadyMemberException}, {@link BoardMemberNotFoundException},
+ * {@link BoardNotInTrashException}, {@link InvalidActivityException},
  * {@link TooManyRequestsException}), template domain exceptions
  * ({@link TemplateNotFoundException}, {@link InvalidTemplateIdException},
  * {@link InvalidCanvasElementException}), as well as
@@ -125,6 +126,37 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
         problem.setTitle("Already a member");
         problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 409 Conflict when a restore or permanent-delete operation targets a board
+     * that is not currently in the trash.
+     *
+     * @param ex the thrown exception
+     * @return a 409 problem detail
+     */
+    @ExceptionHandler(BoardNotInTrashException.class)
+    public ProblemDetail handleBoardNotInTrash(final BoardNotInTrashException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        problem.setTitle("Board not in trash");
+        problem.setDetail(ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 400 with a machine-readable {@code code} property when
+     * {@code enabledActivities} contains an unknown activity code.
+     *
+     * @param ex the thrown exception
+     * @return a 400 problem detail with {@code { "code": "INVALID_ACTIVITY" } }
+     */
+    @ExceptionHandler(InvalidActivityException.class)
+    public ProblemDetail handleInvalidActivity(final InvalidActivityException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid activity");
+        problem.setDetail(ex.getMessage());
+        problem.setProperties(Map.of("code", "INVALID_ACTIVITY"));
         return problem;
     }
 

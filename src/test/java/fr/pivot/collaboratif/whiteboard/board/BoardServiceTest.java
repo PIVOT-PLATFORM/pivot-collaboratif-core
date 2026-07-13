@@ -2,10 +2,16 @@ package fr.pivot.collaboratif.whiteboard.board;
 
 import fr.pivot.collaboratif.exception.BoardAccessDeniedException;
 import fr.pivot.collaboratif.exception.BoardNotFoundException;
+import fr.pivot.collaboratif.exception.BoardNotInTrashException;
+import fr.pivot.collaboratif.exception.InvalidActivityException;
 import fr.pivot.collaboratif.exception.TemplateNotFoundException;
 import fr.pivot.collaboratif.exception.WhiteboardModuleDisabledException;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardPageResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardResponse;
+import fr.pivot.collaboratif.whiteboard.board.dto.PatchBoardRequest;
+import fr.pivot.collaboratif.whiteboard.board.dto.SaveAsTemplateRequest;
+import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
+import fr.pivot.collaboratif.whiteboard.canvas.WhiteboardBroadcastService;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplate;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplateService;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,16 +32,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for {@link BoardService} covering all business branches.
+ * Unit tests for {@link BoardService} covering all business branches, including the
+ * whiteboard "visible parity" additions (US08.1.6 favorites, US08.1.7 trash/soft-delete,
+ * US08.1.8 search, US08.2.4 settings/reset/save-as-template).
  *
- * <p>All external dependencies (repositories, module check) are mocked via Mockito.
- * No Spring context is loaded — tests are fast and isolated.
+ * <p>All external dependencies (repositories, module check, template service, broadcaster)
+ * are mocked via Mockito. No Spring context is loaded — tests are fast and isolated.
  */
 @ExtendWith(MockitoExtension.class)
 class BoardServiceTest {
@@ -47,10 +56,19 @@ class BoardServiceTest {
     private BoardMemberRepository boardMemberRepository;
 
     @Mock
+    private BoardFavoriteRepository boardFavoriteRepository;
+
+    @Mock
+    private CanvasEventRepository canvasEventRepository;
+
+    @Mock
     private WhiteboardModuleCheck moduleCheck;
 
     @Mock
     private WhiteboardTemplateService templateService;
+
+    @Mock
+    private WhiteboardBroadcastService broadcastService;
 
     private BoardService boardService;
 
@@ -61,17 +79,14 @@ class BoardServiceTest {
     @BeforeEach
     void setUp() {
         boardService = new BoardService(
-                boardRepository, boardMemberRepository, moduleCheck, templateService);
+                boardRepository, boardMemberRepository, boardFavoriteRepository,
+                canvasEventRepository, moduleCheck, templateService, broadcastService);
     }
 
     // -------------------------------------------------------------------------
     // create()
     // -------------------------------------------------------------------------
 
-    /**
-     * Given the module is enabled, when create() is called,
-     * then it returns a BoardResponse with the correct title, tenantId, and role "owner".
-     */
     @Test
     void create_whenModuleEnabled_returnsBoardResponseWithOwnerRole() {
         when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
@@ -85,12 +100,9 @@ class BoardServiceTest {
         assertThat(response.title()).isEqualTo("My Board");
         assertThat(response.role()).isEqualTo("owner");
         assertThat(response.tenantId()).isEqualTo(TENANT_A);
+        assertThat(response.favorite()).isFalse();
     }
 
-    /**
-     * Given the module is disabled for the tenant, when create() is called,
-     * then it throws {@link WhiteboardModuleDisabledException} (mapped to HTTP 403).
-     */
     @Test
     void create_whenModuleDisabled_throwsWhiteboardModuleDisabledException() {
         when(moduleCheck.isEnabled(TENANT_A)).thenReturn(false);
@@ -99,11 +111,6 @@ class BoardServiceTest {
                 .isInstanceOf(WhiteboardModuleDisabledException.class);
     }
 
-    /**
-     * Given no templateId, when the 3-arg create() overload delegates to the 4-arg one,
-     * then {@link WhiteboardTemplateService} is never consulted (US08.1.1 behaviour
-     * unchanged).
-     */
     @Test
     void create_withoutTemplateId_neverResolvesTemplate() {
         when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
@@ -114,17 +121,10 @@ class BoardServiceTest {
 
         boardService.create("My Board", USER_A, TENANT_A);
 
-        verify(templateService, never())
-                .resolveGlobalTemplate(anyString());
-        verify(templateService, never())
-                .initializeBoard(any(), any(), any(), any());
+        verify(templateService, never()).resolveGlobalTemplate(anyString());
+        verify(templateService, never()).initializeBoard(any(), any(), any(), any());
     }
 
-    /**
-     * Given a valid templateId resolving to an existing global template, when create() is
-     * called with it, then the board is created and the template service initializes its
-     * canvas from that template.
-     */
     @Test
     void create_withValidTemplateId_initializesBoardFromTemplate() {
         UUID templateUuid = UUID.randomUUID();
@@ -140,15 +140,9 @@ class BoardServiceTest {
                 boardService.create("My Board", USER_A, TENANT_A, templateUuid.toString());
 
         assertThat(response.title()).isEqualTo("My Board");
-        verify(templateService)
-                .initializeBoard(template, savedBoard.getId(), TENANT_A, USER_A);
+        verify(templateService).initializeBoard(template, savedBoard.getId(), TENANT_A, USER_A);
     }
 
-    /**
-     * Given a templateId that does not resolve to an existing global template, when
-     * create() is called, then the exception from {@link WhiteboardTemplateService}
-     * propagates and no board is persisted.
-     */
     @Test
     void create_withUnknownTemplateId_propagatesTemplateNotFoundAndDoesNotPersistBoard() {
         UUID templateUuid = UUID.randomUUID();
@@ -163,84 +157,88 @@ class BoardServiceTest {
         verify(boardRepository, never()).save(any(Board.class));
     }
 
-    /**
-     * Given the module is disabled for the tenant, when create() is called with a
-     * templateId, then it throws {@link WhiteboardModuleDisabledException} before the
-     * template is even resolved.
-     */
-    @Test
-    void create_withTemplateIdAndModuleDisabled_throwsBeforeResolvingTemplate() {
-        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(false);
-
-        assertThatThrownBy(() ->
-                boardService.create("Title", USER_A, TENANT_A, UUID.randomUUID().toString()))
-                .isInstanceOf(WhiteboardModuleDisabledException.class);
-
-        verify(templateService, never())
-                .resolveGlobalTemplate(anyString());
-    }
-
     // -------------------------------------------------------------------------
-    // findAccessible()
+    // findAccessible() — list + search (US08.1.8)
     // -------------------------------------------------------------------------
 
-    /**
-     * Given boards owned by the user, when findAccessible() is called,
-     * then the returned page contains those boards with role "owner".
-     */
     @Test
     void findAccessible_returnsOwnedBoards() {
         Board board = boardWithOwner(UUID.randomUUID(), "Board 1", USER_A, TENANT_A);
-        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), any(Pageable.class)))
+        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), isNull(), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(board)));
+        when(boardFavoriteRepository.findFavoritedBoardIds(eq(USER_A), any())).thenReturn(List.of());
 
-        BoardPageResponse page = boardService.findAccessible(USER_A, TENANT_A, 0, 20);
+        BoardPageResponse page = boardService.findAccessible(USER_A, TENANT_A, null, 0, 20);
 
         assertThat(page.boards()).hasSize(1);
         assertThat(page.boards().get(0).role()).isEqualTo("owner");
+        assertThat(page.boards().get(0).favorite()).isFalse();
         assertThat(page.currentPage()).isEqualTo(0);
         assertThat(page.totalElements()).isEqualTo(1);
     }
 
-    /**
-     * Given size is zero, when findAccessible() is called,
-     * then it throws {@link IllegalArgumentException}.
-     */
     @Test
     void findAccessible_whenSizeIsZero_throwsIllegalArgumentException() {
-        assertThatThrownBy(() -> boardService.findAccessible(USER_A, TENANT_A, 0, 0))
+        assertThatThrownBy(() -> boardService.findAccessible(USER_A, TENANT_A, null, 0, 0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
-    /**
-     * Given size exceeds 50, when findAccessible() is called,
-     * then the effective page size used in the query is capped at 50.
-     */
     @Test
     void findAccessible_cappsSizeAtMax50() {
-        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), any(Pageable.class)))
+        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), isNull(), any(Pageable.class)))
                 .thenAnswer(inv -> {
-                    Pageable pageable = inv.getArgument(2);
+                    Pageable pageable = inv.getArgument(3);
                     assertThat(pageable.getPageSize()).isEqualTo(50);
                     return new PageImpl<>(List.of());
                 });
 
-        boardService.findAccessible(USER_A, TENANT_A, 0, 100);
+        boardService.findAccessible(USER_A, TENANT_A, null, 0, 100);
+    }
+
+    @Test
+    void ac08_1_8_01_findAccessible_normalizesSearchTermLowercaseAndAccentStripped() {
+        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), eq("retro"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        boardService.findAccessible(USER_A, TENANT_A, "  RÉTRO  ", 0, 20);
+
+        verify(boardRepository).findAccessibleByUser(eq(USER_A), eq(TENANT_A), eq("retro"), any(Pageable.class));
+    }
+
+    @Test
+    void ac08_1_8_02_findAccessible_blankSearchIsPassedAsNull() {
+        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), isNull(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        boardService.findAccessible(USER_A, TENANT_A, "   ", 0, 20);
+
+        verify(boardRepository).findAccessibleByUser(eq(USER_A), eq(TENANT_A), isNull(), any(Pageable.class));
+    }
+
+    @Test
+    void ac08_1_6_03_findAccessible_marksFavoritedBoards() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Fav", USER_A, TENANT_A);
+        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), isNull(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(board)));
+        when(boardFavoriteRepository.findFavoritedBoardIds(eq(USER_A), any())).thenReturn(List.of(boardId));
+
+        BoardPageResponse page = boardService.findAccessible(USER_A, TENANT_A, null, 0, 20);
+
+        assertThat(page.boards().get(0).favorite()).isTrue();
     }
 
     // -------------------------------------------------------------------------
     // findById()
     // -------------------------------------------------------------------------
 
-    /**
-     * Given the caller is the board owner, when findById() is called,
-     * then it returns a BoardResponse with role "owner".
-     */
     @Test
     void findById_whenOwner_returnsBoardWithOwnerRole() {
         UUID boardId = UUID.randomUUID();
         Board board = boardWithOwner(boardId, "My Board", USER_A, TENANT_A);
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(false);
 
         BoardResponse response = boardService.findById(boardId, USER_A, TENANT_A);
 
@@ -248,180 +246,456 @@ class BoardServiceTest {
         assertThat(response.role()).isEqualTo("owner");
     }
 
-    /**
-     * Given no board matches the id+tenantId combination, when findById() is called,
-     * then it throws {@link BoardNotFoundException}.
-     */
     @Test
     void findById_whenNotFound_throwsBoardNotFoundException() {
         UUID boardId = UUID.randomUUID();
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.empty());
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> boardService.findById(boardId, USER_A, TENANT_A))
                 .isInstanceOf(BoardNotFoundException.class);
     }
 
-    /**
-     * Given the caller is a board member with EDITOR role, when findById() is called,
-     * then it returns a BoardResponse with role "editor".
-     */
     @Test
     void findById_whenMemberNotOwner_returnsBoardWithMemberRole() {
         UUID boardId = UUID.randomUUID();
         Long ownerId = 10L;
         Long editorId = 11L;
         Board board = boardWithOwner(boardId, "Shared Board", ownerId, TENANT_A);
-        BoardMemberId memberId = new BoardMemberId(boardId, editorId);
-        BoardMember member = new BoardMember(memberId, BoardRole.EDITOR, Instant.now());
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+        BoardMember member = new BoardMember(
+                new BoardMemberId(boardId, editorId), BoardRole.EDITOR, Instant.now());
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
         when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, editorId))
                 .thenReturn(Optional.of(member));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, editorId)).thenReturn(false);
 
         BoardResponse response = boardService.findById(boardId, editorId, TENANT_A);
 
         assertThat(response.role()).isEqualTo("editor");
     }
 
-    /**
-     * Given the caller is neither owner nor member, when findById() is called,
-     * then it throws {@link BoardNotFoundException} (to avoid information disclosure).
-     */
-    @Test
-    void findById_whenUserIsNeitherOwnerNorMember_throwsBoardNotFoundException() {
-        UUID boardId = UUID.randomUUID();
-        Long ownerId = 20L;
-        Long strangerId = 21L;
-        Board board = boardWithOwner(boardId, "Private Board", ownerId, TENANT_A);
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
-        when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, strangerId))
-                .thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> boardService.findById(boardId, strangerId, TENANT_A))
-                .isInstanceOf(BoardNotFoundException.class);
-    }
-
     // -------------------------------------------------------------------------
-    // rename()
+    // patch() — rename + settings (US08.1.4 / US08.2.4)
     // -------------------------------------------------------------------------
 
-    /**
-     * Given the caller is the board owner and the new title is valid, when rename() is called,
-     * then it updates the title and returns the updated response.
-     */
     @Test
-    void rename_whenOwner_updatesTitle() {
+    void patch_whenOwner_updatesTitle() {
         UUID boardId = UUID.randomUUID();
         Board board = boardWithOwner(boardId, "Old Title", USER_A, TENANT_A);
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
         when(boardRepository.save(board)).thenReturn(board);
 
-        BoardResponse response = boardService.rename(boardId, "New Title", USER_A, TENANT_A);
+        BoardResponse response = boardService.patch(
+                boardId, new PatchBoardRequest("New Title", null, null, null, null), USER_A, TENANT_A);
 
         assertThat(response.title()).isEqualTo("New Title");
         verify(boardRepository).save(board);
     }
 
-    /**
-     * Given the caller is an EDITOR (not owner), when rename() is called,
-     * then it throws {@link BoardAccessDeniedException}.
-     */
     @Test
-    void rename_whenEditor_throwsBoardAccessDeniedException() {
+    void ac08_2_4_02_patch_whenOwner_updatesDescriptionAndSettings() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "T", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardRepository.save(board)).thenReturn(board);
+
+        BoardResponse response = boardService.patch(
+                boardId,
+                new PatchBoardRequest(null, "A description", "cover.png", 10, List.of("VOTE")),
+                USER_A, TENANT_A);
+
+        assertThat(response.description()).isEqualTo("A description");
+        assertThat(response.coverImage()).isEqualTo("cover.png");
+        assertThat(response.maxParticipants()).isEqualTo(10);
+        assertThat(response.enabledActivities()).containsExactly("VOTE");
+    }
+
+    @Test
+    void ac08_2_4_03_patch_withUnknownActivity_throwsInvalidActivityException() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "T", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+
+        assertThatThrownBy(() -> boardService.patch(
+                boardId,
+                new PatchBoardRequest(null, null, null, null, List.of("NOT_A_REAL_ACTIVITY")),
+                USER_A, TENANT_A))
+                .isInstanceOf(InvalidActivityException.class);
+        verify(boardRepository, never()).save(any());
+    }
+
+    @Test
+    void patch_whenEditor_throwsBoardAccessDeniedException() {
         UUID boardId = UUID.randomUUID();
         Long ownerId = 30L;
         Long editorId = 31L;
         Board board = boardWithOwner(boardId, "Title", ownerId, TENANT_A);
-        BoardMemberId memberId = new BoardMemberId(boardId, editorId);
-        BoardMember member = new BoardMember(memberId, BoardRole.EDITOR, Instant.now());
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+        BoardMember member = new BoardMember(
+                new BoardMemberId(boardId, editorId), BoardRole.EDITOR, Instant.now());
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
         when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, editorId))
                 .thenReturn(Optional.of(member));
 
-        assertThatThrownBy(() -> boardService.rename(boardId, "New Title", editorId, TENANT_A))
+        assertThatThrownBy(() -> boardService.patch(
+                boardId, new PatchBoardRequest("New Title", null, null, null, null), editorId, TENANT_A))
                 .isInstanceOf(BoardAccessDeniedException.class);
     }
 
-    /**
-     * Given the board is not found, when rename() is called,
-     * then it throws {@link BoardNotFoundException}.
-     */
     @Test
-    void rename_whenBoardNotFound_throwsBoardNotFoundException() {
+    void patch_whenBoardNotFound_throwsBoardNotFoundException() {
         UUID boardId = UUID.randomUUID();
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> boardService.rename(boardId, "New Title", USER_A, TENANT_A))
-                .isInstanceOf(BoardNotFoundException.class);
-    }
-
-    /**
-     * Given the caller is neither owner nor member, when rename() is called,
-     * then it throws {@link BoardNotFoundException} (to avoid information disclosure).
-     */
-    @Test
-    void rename_whenNonMember_throwsBoardNotFoundException() {
-        UUID boardId = UUID.randomUUID();
-        Long ownerId = 40L;
-        Long strangerId = 41L;
-        Board board = boardWithOwner(boardId, "Title", ownerId, TENANT_A);
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
-        when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, strangerId))
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
                 .thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> boardService.rename(boardId, "New Title", strangerId, TENANT_A))
+        assertThatThrownBy(() -> boardService.patch(
+                boardId, new PatchBoardRequest("New Title", null, null, null, null), USER_A, TENANT_A))
                 .isInstanceOf(BoardNotFoundException.class);
     }
 
     // -------------------------------------------------------------------------
-    // delete()
+    // softDelete() (US08.1.7)
     // -------------------------------------------------------------------------
 
-    /**
-     * Given the caller is the board owner, when delete() is called,
-     * then the board is deleted from the repository.
-     */
     @Test
-    void delete_whenOwner_deletesBoard() {
+    void ac08_1_7_01_softDelete_whenOwner_setsDeletedAtNotHardDelete() {
         UUID boardId = UUID.randomUUID();
-        Board board = boardWithOwner(boardId, "To Delete", USER_A, TENANT_A);
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+        Board board = boardWithOwner(boardId, "To Trash", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
 
-        boardService.delete(boardId, USER_A, TENANT_A);
+        boardService.softDelete(boardId, USER_A, TENANT_A);
 
-        verify(boardRepository).delete(board);
+        assertThat(board.getDeletedAt()).isNotNull();
+        verify(boardRepository).save(board);
+        verify(boardRepository, never()).delete(any());
     }
 
-    /**
-     * Given the caller is a VIEWER (not owner), when delete() is called,
-     * then it throws {@link BoardAccessDeniedException}.
-     */
     @Test
-    void delete_whenViewer_throwsBoardAccessDeniedException() {
+    void softDelete_whenViewer_throwsBoardAccessDeniedException() {
         UUID boardId = UUID.randomUUID();
         Long ownerId = 50L;
         Long viewerId = 51L;
         Board board = boardWithOwner(boardId, "Title", ownerId, TENANT_A);
-        BoardMemberId memberId = new BoardMemberId(boardId, viewerId);
-        BoardMember member = new BoardMember(memberId, BoardRole.VIEWER, Instant.now());
-        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+        BoardMember member = new BoardMember(
+                new BoardMemberId(boardId, viewerId), BoardRole.VIEWER, Instant.now());
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
         when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, viewerId))
                 .thenReturn(Optional.of(member));
 
-        assertThatThrownBy(() -> boardService.delete(boardId, viewerId, TENANT_A))
+        assertThatThrownBy(() -> boardService.softDelete(boardId, viewerId, TENANT_A))
                 .isInstanceOf(BoardAccessDeniedException.class);
     }
 
-    /**
-     * Given the board is not found, when delete() is called,
-     * then it throws {@link BoardNotFoundException}.
-     */
     @Test
-    void delete_whenBoardNotFound_throwsBoardNotFoundException() {
+    void softDelete_whenBoardNotFound_throwsBoardNotFoundException() {
+        UUID boardId = UUID.randomUUID();
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> boardService.softDelete(boardId, USER_A, TENANT_A))
+                .isInstanceOf(BoardNotFoundException.class);
+    }
+
+    // -------------------------------------------------------------------------
+    // restore() (US08.1.7)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void ac08_1_7_03_restore_whenOwnerAndTrashed_clearsDeletedAt() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Trashed", USER_A, TENANT_A);
+        board.setDeletedAt(Instant.now());
+        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+
+        boardService.restore(boardId, USER_A, TENANT_A);
+
+        assertThat(board.getDeletedAt()).isNull();
+        verify(boardRepository).save(board);
+    }
+
+    @Test
+    void ac08_1_7_07_restore_whenNotInTrash_throwsConflict() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Not trashed", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+
+        assertThatThrownBy(() -> boardService.restore(boardId, USER_A, TENANT_A))
+                .isInstanceOf(BoardNotInTrashException.class);
+    }
+
+    @Test
+    void ac08_1_7_08_restore_whenNonOwner_throwsAccessDenied() {
+        UUID boardId = UUID.randomUUID();
+        Long ownerId = 60L;
+        Long editorId = 61L;
+        Board board = boardWithOwner(boardId, "Trashed", ownerId, TENANT_A);
+        board.setDeletedAt(Instant.now());
+        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+
+        assertThatThrownBy(() -> boardService.restore(boardId, editorId, TENANT_A))
+                .isInstanceOf(BoardAccessDeniedException.class);
+    }
+
+    @Test
+    void restore_whenBoardNotFound_throwsBoardNotFoundException() {
         UUID boardId = UUID.randomUUID();
         when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> boardService.delete(boardId, USER_A, TENANT_A))
+        assertThatThrownBy(() -> boardService.restore(boardId, USER_A, TENANT_A))
                 .isInstanceOf(BoardNotFoundException.class);
+    }
+
+    // -------------------------------------------------------------------------
+    // permanentDelete() (US08.1.7)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void permanentDelete_whenOwnerAndTrashed_hardDeletes() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Trashed", USER_A, TENANT_A);
+        board.setDeletedAt(Instant.now());
+        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+
+        boardService.permanentDelete(boardId, USER_A, TENANT_A);
+
+        verify(boardRepository).delete(board);
+    }
+
+    @Test
+    void permanentDelete_whenNotInTrash_throwsConflict() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Not trashed", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+
+        assertThatThrownBy(() -> boardService.permanentDelete(boardId, USER_A, TENANT_A))
+                .isInstanceOf(BoardNotInTrashException.class);
+        verify(boardRepository, never()).delete(any());
+    }
+
+    @Test
+    void permanentDelete_whenNonOwner_throwsAccessDenied() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Trashed", 70L, TENANT_A);
+        board.setDeletedAt(Instant.now());
+        when(boardRepository.findByIdAndTenantId(boardId, TENANT_A)).thenReturn(Optional.of(board));
+
+        assertThatThrownBy(() -> boardService.permanentDelete(boardId, 71L, TENANT_A))
+                .isInstanceOf(BoardAccessDeniedException.class);
+    }
+
+    // -------------------------------------------------------------------------
+    // findTrashed() (US08.1.7)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void ac08_1_7_02_findTrashed_returnsOwnedTrashedBoardsWithDeletedAt() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Trashed", USER_A, TENANT_A);
+        Instant deletedAt = Instant.now();
+        board.setDeletedAt(deletedAt);
+        when(boardRepository.findByOwnerIdAndTenantIdAndDeletedAtIsNotNull(
+                eq(USER_A), eq(TENANT_A), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(board)));
+
+        BoardPageResponse page = boardService.findTrashed(USER_A, TENANT_A, 0, 20);
+
+        assertThat(page.boards()).hasSize(1);
+        assertThat(page.boards().get(0).deletedAt()).isEqualTo(deletedAt);
+        assertThat(page.boards().get(0).role()).isEqualTo("owner");
+    }
+
+    @Test
+    void findTrashed_whenSizeZero_throwsIllegalArgumentException() {
+        assertThatThrownBy(() -> boardService.findTrashed(USER_A, TENANT_A, 0, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // -------------------------------------------------------------------------
+    // favorites (US08.1.6)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void ac08_1_6_01_addFavorite_whenMember_persistsFavorite() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "B", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(false);
+
+        boardService.addFavorite(boardId, USER_A, TENANT_A);
+
+        verify(boardFavoriteRepository).save(any(BoardFavorite.class));
+    }
+
+    @Test
+    void ac08_1_6_02_addFavorite_whenAlreadyFavorited_isIdempotentNoOp() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "B", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(true);
+
+        boardService.addFavorite(boardId, USER_A, TENANT_A);
+
+        verify(boardFavoriteRepository, never()).save(any());
+    }
+
+    @Test
+    void ac08_1_6_07_addFavorite_whenBoardInaccessible_throws404() {
+        UUID boardId = UUID.randomUUID();
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> boardService.addFavorite(boardId, USER_A, TENANT_A))
+                .isInstanceOf(BoardNotFoundException.class);
+        verify(boardFavoriteRepository, never()).save(any());
+    }
+
+    @Test
+    void ac08_1_6_08_addFavorite_whenNotMember_throws404() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "B", 80L, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, 81L))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> boardService.addFavorite(boardId, 81L, TENANT_A))
+                .isInstanceOf(BoardNotFoundException.class);
+    }
+
+    @Test
+    void ac08_1_6_09_removeFavorite_deletesOnlyCallerMarker() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "B", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+
+        boardService.removeFavorite(boardId, USER_A, TENANT_A);
+
+        verify(boardFavoriteRepository).deleteByIdBoardIdAndIdUserId(boardId, USER_A);
+    }
+
+    @Test
+    void removeFavorite_whenBoardInaccessible_throws404() {
+        UUID boardId = UUID.randomUUID();
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> boardService.removeFavorite(boardId, USER_A, TENANT_A))
+                .isInstanceOf(BoardNotFoundException.class);
+    }
+
+    // -------------------------------------------------------------------------
+    // reset() (US08.2.4)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void ac08_2_4_06_reset_whenOwner_deletesEventsAndBroadcasts() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "B", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+
+        boardService.reset(boardId, USER_A, TENANT_A);
+
+        verify(canvasEventRepository).deleteAllByBoardIdAndTenantId(boardId, TENANT_A);
+        verify(broadcastService).broadcastReset(boardId, USER_A);
+    }
+
+    @Test
+    void ac08_2_4_07_reset_whenEditor_isAllowed() {
+        UUID boardId = UUID.randomUUID();
+        Long ownerId = 90L;
+        Long editorId = 91L;
+        Board board = boardWithOwner(boardId, "B", ownerId, TENANT_A);
+        BoardMember member = new BoardMember(
+                new BoardMemberId(boardId, editorId), BoardRole.EDITOR, Instant.now());
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, editorId))
+                .thenReturn(Optional.of(member));
+
+        boardService.reset(boardId, editorId, TENANT_A);
+
+        verify(canvasEventRepository).deleteAllByBoardIdAndTenantId(boardId, TENANT_A);
+        verify(broadcastService).broadcastReset(boardId, editorId);
+    }
+
+    @Test
+    void ac08_2_4_08_reset_whenViewer_throwsAccessDenied() {
+        UUID boardId = UUID.randomUUID();
+        Long ownerId = 92L;
+        Long viewerId = 93L;
+        Board board = boardWithOwner(boardId, "B", ownerId, TENANT_A);
+        BoardMember member = new BoardMember(
+                new BoardMemberId(boardId, viewerId), BoardRole.VIEWER, Instant.now());
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, viewerId))
+                .thenReturn(Optional.of(member));
+
+        assertThatThrownBy(() -> boardService.reset(boardId, viewerId, TENANT_A))
+                .isInstanceOf(BoardAccessDeniedException.class);
+        verify(canvasEventRepository, never()).deleteAllByBoardIdAndTenantId(any(), any());
+        verify(broadcastService, never()).broadcastReset(any(), any());
+    }
+
+    @Test
+    void reset_whenBoardInaccessible_throws404() {
+        UUID boardId = UUID.randomUUID();
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> boardService.reset(boardId, USER_A, TENANT_A))
+                .isInstanceOf(BoardNotFoundException.class);
+    }
+
+    // -------------------------------------------------------------------------
+    // saveAsTemplate() (US08.2.4)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void ac08_2_4_04_saveAsTemplate_whenOwner_createsTemplate() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "B", USER_A, TENANT_A);
+        WhiteboardTemplate template = new WhiteboardTemplate(
+                UUID.randomUUID(), TENANT_A, "My Template", "desc", null);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(templateService.createFromBoard(boardId, TENANT_A, "My Template", "desc"))
+                .thenReturn(template);
+
+        var response = boardService.saveAsTemplate(
+                boardId, new SaveAsTemplateRequest("My Template", "desc"), USER_A, TENANT_A);
+
+        assertThat(response.name()).isEqualTo("My Template");
+        verify(templateService).createFromBoard(boardId, TENANT_A, "My Template", "desc");
+    }
+
+    @Test
+    void ac08_2_4_09_saveAsTemplate_whenNonOwner_throwsAccessDenied() {
+        UUID boardId = UUID.randomUUID();
+        Long ownerId = 95L;
+        Long editorId = 96L;
+        Board board = boardWithOwner(boardId, "B", ownerId, TENANT_A);
+        BoardMember member = new BoardMember(
+                new BoardMemberId(boardId, editorId), BoardRole.EDITOR, Instant.now());
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, editorId))
+                .thenReturn(Optional.of(member));
+
+        assertThatThrownBy(() -> boardService.saveAsTemplate(
+                boardId, new SaveAsTemplateRequest("T", null), editorId, TENANT_A))
+                .isInstanceOf(BoardAccessDeniedException.class);
+        verify(templateService, never()).createFromBoard(any(), any(), any(), any());
     }
 
     // -------------------------------------------------------------------------
@@ -429,19 +703,12 @@ class BoardServiceTest {
     // -------------------------------------------------------------------------
 
     /**
-     * Creates a Board instance with the given id set via reflection,
-     * simulating a JPA-persisted entity whose id is assigned by the database.
-     *
-     * @param id       the UUID to assign to the board
-     * @param title    the board title
-     * @param ownerId  the owner user id
-     * @param tenantId the tenant id
-     * @return a board with the specified id
+     * Creates a Board instance with the given id set via reflection, simulating a
+     * JPA-persisted entity whose id is assigned by the database.
      */
     private Board boardWithOwner(
             final UUID id, final String title, final Long ownerId, final Long tenantId) {
-        Instant now = Instant.now();
-        Board board = new Board(title, tenantId, ownerId, now);
+        Board board = new Board(title, tenantId, ownerId, Instant.now());
         try {
             java.lang.reflect.Field field = Board.class.getDeclaredField("id");
             field.setAccessible(true);

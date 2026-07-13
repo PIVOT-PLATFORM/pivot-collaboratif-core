@@ -205,6 +205,58 @@ class WhiteboardTemplateServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // createFromBoard() — US08.2.4 save as template
+    // -------------------------------------------------------------------------
+
+    /**
+     * Given a board with 2 persisted DRAW canvas events, when createFromBoard() is called,
+     * then a tenant-owned template header is saved and one template element is persisted per
+     * canvas event, in order.
+     */
+    @Test
+    void createFromBoard_snapshotsCanvasEventsAsOrderedTemplateElements() {
+        when(templateRepository.save(any(WhiteboardTemplate.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+        CanvasEvent e1 = mock(CanvasEvent.class);
+        CanvasEvent e2 = mock(CanvasEvent.class);
+        when(e1.getPayload()).thenReturn("{\"a\":1}");
+        when(e2.getPayload()).thenReturn("{\"b\":2}");
+        when(canvasEventRepository.findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(BOARD_A, TENANT_A))
+                .thenReturn(List.of(e1, e2));
+
+        WhiteboardTemplate template =
+                templateService.createFromBoard(BOARD_A, TENANT_A, "My Template", "desc");
+
+        assertThat(template.getTenantId()).isEqualTo(TENANT_A);
+        assertThat(template.getName()).isEqualTo("My Template");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<WhiteboardTemplateElement>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(templateElementRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).hasSize(2);
+        assertThat(captor.getValue().get(0).getDisplayOrder()).isEqualTo(0);
+        assertThat(captor.getValue().get(1).getDisplayOrder()).isEqualTo(1);
+    }
+
+    /**
+     * Given a board with no canvas content, when createFromBoard() is called,
+     * then a valid empty template is created (no elements).
+     */
+    @Test
+    void createFromBoard_withEmptyCanvas_createsEmptyTemplate() {
+        when(templateRepository.save(any(WhiteboardTemplate.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+        when(canvasEventRepository.findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(BOARD_A, TENANT_A))
+                .thenReturn(List.of());
+
+        WhiteboardTemplate template =
+                templateService.createFromBoard(BOARD_A, TENANT_A, "Empty", null);
+
+        assertThat(template.getName()).isEqualTo("Empty");
+        verify(templateElementRepository).saveAll(eq(List.of()));
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 

@@ -2,11 +2,18 @@ package fr.pivot.collaboratif.whiteboard.board;
 
 import fr.pivot.collaboratif.exception.BoardAccessDeniedException;
 import fr.pivot.collaboratif.exception.BoardNotFoundException;
+import fr.pivot.collaboratif.exception.BoardNotInTrashException;
+import fr.pivot.collaboratif.exception.InvalidActivityException;
 import fr.pivot.collaboratif.exception.WhiteboardModuleDisabledException;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardPageResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardResponse;
+import fr.pivot.collaboratif.whiteboard.board.dto.PatchBoardRequest;
+import fr.pivot.collaboratif.whiteboard.board.dto.SaveAsTemplateRequest;
+import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
+import fr.pivot.collaboratif.whiteboard.canvas.WhiteboardBroadcastService;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplate;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplateService;
+import fr.pivot.collaboratif.whiteboard.template.dto.TemplateResponse;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -14,8 +21,12 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.text.Normalizer;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -24,47 +35,63 @@ import java.util.UUID;
  * <p>All read operations are wrapped in a read-only transaction; write operations
  * use a full read-write transaction. The service enforces tenant isolation and role-based
  * access control for every board operation.
+ *
+ * <p>Tenant and user identity are always supplied by the controller from the resolved
+ * {@code RequestPrincipal} (EN08.3) — never from the request body or a query parameter.
+ * Cross-tenant access resolves to a 404 (via {@link BoardNotFoundException}) rather than a
+ * 403, to avoid confirming the existence of a resource in another tenant.
  */
 @Service
 @Transactional(readOnly = true)
 public class BoardService {
-
-    /** Default page size for board list queries. */
-    private static final int DEFAULT_PAGE_SIZE = 20;
 
     /** Maximum allowed page size to prevent unbounded result sets. */
     private static final int MAX_PAGE_SIZE = 50;
 
     private final BoardRepository boardRepository;
     private final BoardMemberRepository boardMemberRepository;
+    private final BoardFavoriteRepository boardFavoriteRepository;
+    private final CanvasEventRepository canvasEventRepository;
     private final WhiteboardModuleCheck moduleCheck;
     private final WhiteboardTemplateService templateService;
+    private final WhiteboardBroadcastService broadcastService;
 
     /**
      * Creates the service with all required dependencies.
      *
-     * @param boardRepository       repository for board persistence
-     * @param boardMemberRepository repository for board membership persistence
-     * @param moduleCheck           check for whiteboard module activation
-     * @param templateService       service resolving templates and initializing a board's
-     *                              canvas from one (US08.4.1)
+     * @param boardRepository         repository for board persistence
+     * @param boardMemberRepository   repository for board membership persistence
+     * @param boardFavoriteRepository repository for per-user favorites (US08.1.6)
+     * @param canvasEventRepository   repository for canvas events (US08.2.4 reset/save-as-template)
+     * @param moduleCheck             check for whiteboard module activation
+     * @param templateService         service resolving templates and initializing a board's
+     *                                canvas from one, and snapshotting a board into a new
+     *                                template (US08.4.1 / US08.2.4)
+     * @param broadcastService        STOMP broadcaster for board reset events (US08.2.4)
      */
     public BoardService(
             final BoardRepository boardRepository,
             final BoardMemberRepository boardMemberRepository,
+            final BoardFavoriteRepository boardFavoriteRepository,
+            final CanvasEventRepository canvasEventRepository,
             final WhiteboardModuleCheck moduleCheck,
-            final WhiteboardTemplateService templateService) {
+            final WhiteboardTemplateService templateService,
+            final WhiteboardBroadcastService broadcastService) {
         this.boardRepository = boardRepository;
         this.boardMemberRepository = boardMemberRepository;
+        this.boardFavoriteRepository = boardFavoriteRepository;
+        this.canvasEventRepository = canvasEventRepository;
         this.moduleCheck = moduleCheck;
         this.templateService = templateService;
+        this.broadcastService = broadcastService;
     }
+
+    // -------------------------------------------------------------------------
+    // create()
+    // -------------------------------------------------------------------------
 
     /**
      * Creates a new board and assigns the caller as OWNER.
-     *
-     * <p>Persists both the board and the initial {@link BoardMember} record in a single
-     * transaction. The board's visibility defaults to {@link BoardVisibility#PRIVATE}.
      *
      * @param title    board title (1–100 chars, validated at the controller layer)
      * @param userId   calling user's {@code public.users.id}
@@ -81,27 +108,17 @@ public class BoardService {
      * Creates a new board and assigns the caller as OWNER, optionally initializing its
      * canvas from a template (US08.4.1).
      *
-     * <p>Persists the board and the initial {@link BoardMember} record, then — if a
-     * {@code templateId} is given — replays the template's elements as {@code DRAW}
-     * canvas events on the new board, all within a single transaction: an invalid or
-     * unknown {@code templateId} rolls back the board creation itself, leaving no orphan
-     * board behind. The board's visibility defaults to {@link BoardVisibility#PRIVATE}.
-     *
      * @param title      board title (1–100 chars, validated at the controller layer)
      * @param userId     calling user's {@code public.users.id}
      * @param tenantId   calling tenant's {@code public.tenants.id}
      * @param templateId raw {@code templateId} request parameter, or {@code null}/blank for
      *                   a blank board (US08.1.1 behaviour, unchanged)
      * @return the created board as a response record
-     * @throws WhiteboardModuleDisabledException                        if the whiteboard
-     *                                                                   module is inactive
-     *                                                                   for the tenant
+     * @throws WhiteboardModuleDisabledException                        if the module is inactive
      * @throws fr.pivot.collaboratif.exception.InvalidTemplateIdException if {@code templateId}
      *                                                                    is not a valid UUID
      * @throws fr.pivot.collaboratif.exception.TemplateNotFoundException  if {@code templateId}
-     *                                                                    does not resolve to
-     *                                                                    an existing global
-     *                                                                    template
+     *                                                                    does not resolve
      */
     @Transactional
     public BoardResponse create(
@@ -120,14 +137,22 @@ public class BoardService {
         if (template != null) {
             templateService.initializeBoard(template, board.getId(), tenantId, userId);
         }
-        return BoardResponse.from(board, BoardRole.OWNER);
+        return BoardResponse.from(board, BoardRole.OWNER, false);
     }
 
+    // -------------------------------------------------------------------------
+    // list / read
+    // -------------------------------------------------------------------------
+
     /**
-     * Returns a paginated list of boards accessible by the caller (owned or shared).
+     * Returns a paginated list of non-trashed boards accessible by the caller (owned or
+     * shared), optionally filtered by a case/accent-insensitive search over title and
+     * description (US08.1.8). Each returned board carries the caller's personal
+     * {@code favorite} flag (US08.1.6).
      *
      * @param userId   calling user's {@code public.users.id}
      * @param tenantId calling tenant's {@code public.tenants.id}
+     * @param query    optional search text (title/description substring), or {@code null}/blank
      * @param page     zero-based page number
      * @param size     requested page size (capped at {@link #MAX_PAGE_SIZE})
      * @return paginated board list with metadata
@@ -136,6 +161,7 @@ public class BoardService {
     public BoardPageResponse findAccessible(
             final Long userId,
             final Long tenantId,
+            final String query,
             final int page,
             final int size) {
         if (size <= 0) {
@@ -144,9 +170,12 @@ public class BoardService {
         int effectiveSize = Math.min(size, MAX_PAGE_SIZE);
         Pageable pageable = PageRequest.of(
                 page, effectiveSize, Sort.by(Sort.Direction.DESC, "updatedAt"));
-        Page<Board> boardPage = boardRepository.findAccessibleByUser(userId, tenantId, pageable);
+        String normalizedSearch = normalizeSearch(query);
+        Page<Board> boardPage =
+                boardRepository.findAccessibleByUser(userId, tenantId, normalizedSearch, pageable);
+        Set<UUID> favoritedIds = favoritedIdsIn(userId, boardPage.getContent());
         List<BoardResponse> responses = boardPage.getContent().stream()
-                .map(b -> toBoardResponse(b, userId))
+                .map(b -> toBoardResponse(b, userId, favoritedIds.contains(b.getId())))
                 .toList();
         return new BoardPageResponse(
                 responses,
@@ -157,60 +186,114 @@ public class BoardService {
     }
 
     /**
-     * Returns a single board if the caller has access to it.
+     * Returns a paginated list of trashed boards owned by the caller (US08.1.7).
      *
-     * <p>Both ownership and membership are checked. A 404 is returned regardless of whether
-     * the board simply does not exist or belongs to a different tenant (to avoid information
-     * disclosure).
+     * <p>Only the OWNER of a board sees it in the trash — membership is not enough.
+     * {@code deletedAt} is populated in every returned response.
+     *
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
+     * @param page     zero-based page number
+     * @param size     requested page size (capped at {@link #MAX_PAGE_SIZE})
+     * @return paginated trashed board list with metadata
+     * @throws IllegalArgumentException if {@code size} is zero or negative
+     */
+    public BoardPageResponse findTrashed(
+            final Long userId, final Long tenantId, final int page, final int size) {
+        if (size <= 0) {
+            throw new IllegalArgumentException("Page size must be positive");
+        }
+        int effectiveSize = Math.min(size, MAX_PAGE_SIZE);
+        Pageable pageable = PageRequest.of(
+                page, effectiveSize, Sort.by(Sort.Direction.DESC, "deletedAt"));
+        Page<Board> boardPage = boardRepository
+                .findByOwnerIdAndTenantIdAndDeletedAtIsNotNull(userId, tenantId, pageable);
+        List<BoardResponse> responses = boardPage.getContent().stream()
+                .map(b -> BoardResponse.forTrash(b, BoardRole.OWNER))
+                .toList();
+        return new BoardPageResponse(
+                responses,
+                boardPage.getTotalElements(),
+                boardPage.getTotalPages(),
+                boardPage.getNumber(),
+                boardPage.hasNext());
+    }
+
+    /**
+     * Returns a single non-trashed board if the caller has access to it.
      *
      * @param boardId  the board UUID
      * @param userId   calling user's {@code public.users.id}
      * @param tenantId calling tenant's {@code public.tenants.id}
-     * @return board response for the caller
-     * @throws BoardNotFoundException if the board does not exist, belongs to another tenant,
-     *                                or the caller is not a member or owner
+     * @return board response for the caller, with the caller's personal favorite flag
+     * @throws BoardNotFoundException if the board does not exist, is trashed, belongs to
+     *                                another tenant, or the caller is not a member or owner
      */
     public BoardResponse findById(final UUID boardId, final Long userId, final Long tenantId) {
-        Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
-                .orElseThrow(() -> new BoardNotFoundException(boardId));
+        Board board = requireAccessibleBoard(boardId, tenantId);
         BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
-        return BoardResponse.from(board, role);
+        boolean favorite = boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, userId);
+        return BoardResponse.from(board, role, favorite);
     }
 
+    // -------------------------------------------------------------------------
+    // patch (rename + settings, US08.1.4 + US08.2.4)
+    // -------------------------------------------------------------------------
+
     /**
-     * Renames a board; only the OWNER may rename.
+     * Applies a partial update to a board's title and/or settings; OWNER only.
+     *
+     * <p>Any field left {@code null} in {@code request} is unchanged. {@code enabledActivities},
+     * if present, must be a subset of the known activity whitelist ({@link BoardActivity}).
      *
      * @param boardId  the board UUID
-     * @param newTitle new title (1–100 chars, validated at the controller layer)
+     * @param request  the partial update payload (validated at the controller layer)
      * @param userId   calling user's {@code public.users.id}
      * @param tenantId calling tenant's {@code public.tenants.id}
-     * @return updated board response
+     * @return the updated board response (favorite flag resolved for the caller)
      * @throws BoardNotFoundException     if the board is inaccessible to the caller
      * @throws BoardAccessDeniedException if the caller is not the OWNER
+     * @throws InvalidActivityException   if an unknown activity code is supplied
      */
     @Transactional
-    public BoardResponse rename(
+    public BoardResponse patch(
             final UUID boardId,
-            final String newTitle,
+            final PatchBoardRequest request,
             final Long userId,
             final Long tenantId) {
-        Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
-                .orElseThrow(() -> new BoardNotFoundException(boardId));
-        BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
-        if (role != BoardRole.OWNER) {
-            throw new BoardAccessDeniedException(boardId);
+        Board board = requireOwnedBoard(boardId, userId, tenantId);
+        if (request.title() != null) {
+            board.setTitle(request.title());
         }
-        String oldTitle = board.getTitle();
-        board.setTitle(newTitle);
+        if (request.description() != null) {
+            board.setDescription(request.description());
+        }
+        if (request.coverImage() != null) {
+            board.setCoverImage(request.coverImage());
+        }
+        if (request.maxParticipants() != null) {
+            board.setMaxParticipants(request.maxParticipants());
+        }
+        if (request.enabledActivities() != null) {
+            validateActivities(request.enabledActivities());
+            board.setEnabledActivities(request.enabledActivities());
+        }
         Board saved = boardRepository.save(board);
-        logAuditEvent("BoardRenamed", boardId, userId,
-                "oldTitle=" + oldTitle + " newTitle=" + newTitle);
-        return BoardResponse.from(saved, BoardRole.OWNER);
+        logAuditEvent("BoardUpdated", boardId, userId, "title=" + saved.getTitle());
+        boolean favorite = boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, userId);
+        return BoardResponse.from(saved, BoardRole.OWNER, favorite);
     }
 
+    // -------------------------------------------------------------------------
+    // soft-delete / restore / permanent-delete (US08.1.7)
+    // -------------------------------------------------------------------------
+
     /**
-     * Permanently deletes a board and all its data (cascaded via foreign key); only the OWNER
-     * may delete.
+     * Soft-deletes a board (moves it to the trash by setting {@code deletedAt}); OWNER only.
+     *
+     * <p>The board disappears from normal listings but stays restorable and its data is
+     * preserved (no cascade delete). Idempotency note: an already-trashed board is not
+     * re-accessible via {@link #requireOwnedBoard}, so a second delete resolves to 404.
      *
      * @param boardId  the board UUID
      * @param userId   calling user's {@code public.users.id}
@@ -219,24 +302,212 @@ public class BoardService {
      * @throws BoardAccessDeniedException if the caller is not the OWNER
      */
     @Transactional
-    public void delete(final UUID boardId, final Long userId, final Long tenantId) {
-        Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
+    public void softDelete(final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = requireOwnedBoard(boardId, userId, tenantId);
+        board.setDeletedAt(Instant.now());
+        boardRepository.save(board);
+        logAuditEvent("BoardDeleted", boardId, userId, "title=" + board.getTitle());
+    }
+
+    /**
+     * Restores a board out of the trash ({@code deletedAt = null}); OWNER only.
+     *
+     * @param boardId  the board UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
+     * @throws BoardNotFoundException     if the board does not exist or is cross-tenant
+     * @throws BoardAccessDeniedException if the caller is not the OWNER
+     * @throws BoardNotInTrashException   if the board is not currently in the trash
+     */
+    @Transactional
+    public void restore(final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = requireOwnedTrashCandidate(boardId, userId, tenantId);
+        if (!board.isDeleted()) {
+            throw new BoardNotInTrashException(boardId);
+        }
+        board.setDeletedAt(null);
+        boardRepository.save(board);
+        logAuditEvent("BoardRestored", boardId, userId, "title=" + board.getTitle());
+    }
+
+    /**
+     * Permanently deletes a board and all its data (cascade via FK); OWNER only, and only
+     * while the board is in the trash (US08.1.7 — one may only purge from the trash).
+     *
+     * @param boardId  the board UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
+     * @throws BoardNotFoundException     if the board does not exist or is cross-tenant
+     * @throws BoardAccessDeniedException if the caller is not the OWNER
+     * @throws BoardNotInTrashException   if the board is not currently in the trash
+     */
+    @Transactional
+    public void permanentDelete(final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = requireOwnedTrashCandidate(boardId, userId, tenantId);
+        if (!board.isDeleted()) {
+            throw new BoardNotInTrashException(boardId);
+        }
+        boardRepository.delete(board);
+        logAuditEvent("BoardPurged", boardId, userId, "title=" + board.getTitle());
+    }
+
+    // -------------------------------------------------------------------------
+    // favorites (US08.1.6)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Marks a board as favorite for the calling user (US08.1.6). Idempotent: a no-op if the
+     * board is already favorited. Any board member (owner/editor/viewer) may favorite.
+     *
+     * @param boardId  the board UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
+     * @throws BoardNotFoundException if the board is inaccessible to the caller
+     */
+    @Transactional
+    public void addFavorite(final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = requireAccessibleBoard(boardId, tenantId);
+        // resolveRole throws 404 (BoardNotFoundException) if the caller is not a member.
+        resolveRole(boardId, userId, board.getOwnerId());
+        if (!boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, userId)) {
+            boardFavoriteRepository.save(
+                    new BoardFavorite(new BoardFavoriteId(boardId, userId), Instant.now()));
+        }
+    }
+
+    /**
+     * Removes a board from the calling user's favorites (US08.1.6). Idempotent: a no-op if
+     * the board was not favorited. Any board member may unfavorite their own marker.
+     *
+     * @param boardId  the board UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
+     * @throws BoardNotFoundException if the board is inaccessible to the caller
+     */
+    @Transactional
+    public void removeFavorite(final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = requireAccessibleBoard(boardId, tenantId);
+        resolveRole(boardId, userId, board.getOwnerId());
+        boardFavoriteRepository.deleteByIdBoardIdAndIdUserId(boardId, userId);
+    }
+
+    // -------------------------------------------------------------------------
+    // reset + save-as-template (US08.2.4)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Resets a board's canvas: deletes all persisted DRAW events and broadcasts a
+     * {@code RESET} STOMP message to connected participants (US08.2.4). Board metadata
+     * (title, members, favorites) is untouched.
+     *
+     * <p>Authorized for OWNER <em>or</em> EDITOR (not VIEWER) — deviating from the strict
+     * OWNER-only rule of the other settings actions, per the API contract.
+     *
+     * @param boardId  the board UUID
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
+     * @throws BoardNotFoundException     if the board is inaccessible to the caller
+     * @throws BoardAccessDeniedException if the caller is a VIEWER
+     */
+    @Transactional
+    public void reset(final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = requireAccessibleBoard(boardId, tenantId);
+        BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
+        if (role != BoardRole.OWNER && role != BoardRole.EDITOR) {
+            throw new BoardAccessDeniedException(boardId);
+        }
+        canvasEventRepository.deleteAllByBoardIdAndTenantId(boardId, tenantId);
+        board.setUpdatedAt(Instant.now());
+        boardRepository.save(board);
+        logAuditEvent("BoardReset", boardId, userId, "role=" + role);
+        broadcastService.broadcastReset(boardId, userId);
+    }
+
+    /**
+     * Snapshots a board's current canvas content into a new tenant-private template
+     * (US08.2.4); OWNER only.
+     *
+     * @param boardId  the board UUID
+     * @param request  the template name/description (validated at the controller layer)
+     * @param userId   calling user's {@code public.users.id}
+     * @param tenantId calling tenant's {@code public.tenants.id}
+     * @return the created template as a response record
+     * @throws BoardNotFoundException     if the board is inaccessible to the caller
+     * @throws BoardAccessDeniedException if the caller is not the OWNER
+     */
+    @Transactional
+    public TemplateResponse saveAsTemplate(
+            final UUID boardId,
+            final SaveAsTemplateRequest request,
+            final Long userId,
+            final Long tenantId) {
+        requireOwnedBoard(boardId, userId, tenantId);
+        WhiteboardTemplate template = templateService.createFromBoard(
+                boardId, tenantId, request.name(), request.description());
+        logAuditEvent("BoardSavedAsTemplate", boardId, userId, "template=" + template.getId());
+        return TemplateResponse.from(template);
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Loads a non-trashed board scoped to the tenant, or throws 404.
+     *
+     * @param boardId  the board UUID
+     * @param tenantId the tenant's {@code public.tenants.id}
+     * @return the board
+     * @throws BoardNotFoundException if not found, trashed, or cross-tenant
+     */
+    private Board requireAccessibleBoard(final UUID boardId, final Long tenantId) {
+        return boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, tenantId)
                 .orElseThrow(() -> new BoardNotFoundException(boardId));
+    }
+
+    /**
+     * Loads a non-trashed, tenant-scoped board and asserts the caller is its OWNER.
+     *
+     * @param boardId  the board UUID
+     * @param userId   the caller's {@code public.users.id}
+     * @param tenantId the tenant's {@code public.tenants.id}
+     * @return the owned board
+     * @throws BoardNotFoundException     if not found, trashed, cross-tenant, or the caller
+     *                                    is not a member (anti-enumeration 404)
+     * @throws BoardAccessDeniedException if the caller is a member but not the OWNER
+     */
+    private Board requireOwnedBoard(final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = requireAccessibleBoard(boardId, tenantId);
         BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
         if (role != BoardRole.OWNER) {
             throw new BoardAccessDeniedException(boardId);
         }
-        boardRepository.delete(board);
-        logAuditEvent("BoardDeleted", boardId, userId, "title=" + board.getTitle());
-        // TODO: broadcast BOARD_DELETED STOMP message to /topic/board/{boardId} (EN08.1)
+        return board;
+    }
+
+    /**
+     * Loads a tenant-scoped board regardless of trash status and asserts the caller is its
+     * OWNER — used by restore/permanent-delete which act on trashed boards.
+     *
+     * @param boardId  the board UUID
+     * @param userId   the caller's {@code public.users.id}
+     * @param tenantId the tenant's {@code public.tenants.id}
+     * @return the board (trashed or not)
+     * @throws BoardNotFoundException     if not found or cross-tenant
+     * @throws BoardAccessDeniedException if the caller is not the OWNER
+     */
+    private Board requireOwnedTrashCandidate(
+            final UUID boardId, final Long userId, final Long tenantId) {
+        Board board = boardRepository.findByIdAndTenantId(boardId, tenantId)
+                .orElseThrow(() -> new BoardNotFoundException(boardId));
+        if (!userId.equals(board.getOwnerId())) {
+            throw new BoardAccessDeniedException(boardId);
+        }
+        return board;
     }
 
     /**
      * Resolves the caller's role on a board.
-     *
-     * <p>If the caller is the owner, returns {@link BoardRole#OWNER} immediately without
-     * a database lookup. Otherwise checks the {@code board_member} table and throws
-     * {@link BoardNotFoundException} (to avoid information disclosure) if no membership exists.
      *
      * @param boardId the board UUID
      * @param userId  the caller's {@code public.users.id}
@@ -254,21 +525,70 @@ public class BoardService {
     }
 
     /**
-     * Converts a board entity to a response DTO for the given caller.
+     * Converts a board entity to a response DTO for the given caller, resolving their role.
      *
-     * @param board  the board entity
-     * @param userId the caller's {@code public.users.id} (used to resolve the caller's role)
+     * @param board    the board entity
+     * @param userId   the caller's {@code public.users.id}
+     * @param favorite whether the caller has favorited this board
      * @return the board response
      */
-    private BoardResponse toBoardResponse(final Board board, final Long userId) {
+    private BoardResponse toBoardResponse(
+            final Board board, final Long userId, final boolean favorite) {
         BoardRole role = resolveRole(board.getId(), userId, board.getOwnerId());
-        return BoardResponse.from(board, role);
+        return BoardResponse.from(board, role, favorite);
+    }
+
+    /**
+     * Resolves which of the given boards are favorited by the user, in a single query.
+     *
+     * @param userId the caller's {@code public.users.id}
+     * @param boards the boards to check
+     * @return the set of favorited board ids
+     */
+    private Set<UUID> favoritedIdsIn(final Long userId, final List<Board> boards) {
+        if (boards.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> ids = new HashSet<>(boards.size());
+        for (Board b : boards) {
+            ids.add(b.getId());
+        }
+        return new HashSet<>(boardFavoriteRepository.findFavoritedBoardIds(userId, ids));
+    }
+
+    /**
+     * Validates that every activity code is part of the known whitelist ({@link BoardActivity}).
+     *
+     * @param activities the activity codes to validate
+     * @throws InvalidActivityException on the first unknown code
+     */
+    private void validateActivities(final List<String> activities) {
+        for (String activity : activities) {
+            if (activity == null || !BoardActivity.isKnown(activity)) {
+                throw new InvalidActivityException(String.valueOf(activity));
+            }
+        }
+    }
+
+    /**
+     * Normalizes a search term for case/accent-insensitive matching: trims, lower-cases, and
+     * strips diacritics (NFD decomposition + combining-mark removal), mirroring the SQL
+     * {@code LOWER(unaccent(...))} applied on the column side.
+     *
+     * @param query the raw search term, or {@code null}
+     * @return the normalized term, or {@code null} if the input was {@code null}/blank
+     */
+    private String normalizeSearch(final String query) {
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        String stripped = Normalizer.normalize(query.trim(), Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "");
+        return stripped.toLowerCase(Locale.ROOT);
     }
 
     /**
      * Emits a structured audit log entry for a state-changing board operation.
-     *
-     * <p>TODO: persist via centralized audit service (EN30.9.5)
      *
      * @param event   the audit event name
      * @param boardId the board UUID

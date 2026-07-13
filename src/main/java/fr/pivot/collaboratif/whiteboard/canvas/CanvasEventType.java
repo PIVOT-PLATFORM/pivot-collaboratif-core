@@ -10,8 +10,8 @@ package fr.pivot.collaboratif.whiteboard.canvas;
  * <p>Persistence behaviour by type:
  * <ul>
  *   <li>{@link #DRAW} — persisted in {@code collaboratif.canvas_event} (Last-Write-Wins).</li>
- *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO} — ephemeral,
- *       broadcast only.</li>
+ *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO}, {@link #RESET} —
+ *       ephemeral, broadcast only.</li>
  * </ul>
  */
 public enum CanvasEventType {
@@ -24,5 +24,8 @@ public enum CanvasEventType {
     /** Cursor position update; broadcast only, never persisted (high-frequency, low-value). */
     CURSOR_MOVE,
     /** Undo request; broadcast for visual sync, stack logic delegated to US08.3.3. */
-    UNDO
+    UNDO,
+    /** Board canvas reset (US08.2.4): broadcast only, never persisted — the triggering
+     * {@code POST .../reset} call already deleted the underlying DRAW events server-side. */
+    RESET
 }
