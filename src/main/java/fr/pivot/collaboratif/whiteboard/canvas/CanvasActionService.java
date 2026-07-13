@@ -2,8 +2,10 @@ package fr.pivot.collaboratif.whiteboard.canvas;
 
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRole;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.BoardStatePayload;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
 import fr.pivot.collaboratif.whiteboard.ws.ErrorPayload;
 import fr.pivot.collaboratif.whiteboard.ws.StompPrincipal;
@@ -16,8 +18,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -52,6 +56,7 @@ public class CanvasActionService {
 
     private final SimpMessagingTemplate messagingTemplate;
     private final CanvasEventRepository canvasEventRepository;
+    private final CardRepository cardRepository;
     private final ColorPaletteService colorPaletteService;
     private final ParticipantMetaStore participantMetaStore;
     private final BoardMemberRepository boardMemberRepository;
@@ -65,6 +70,7 @@ public class CanvasActionService {
      *
      * @param messagingTemplate            STOMP broadcast template
      * @param canvasEventRepository        JPA repository for DRAW persistence
+     * @param cardRepository               JPA repository for durable {@link Card} state (EN08.4)
      * @param colorPaletteService          deterministic colour assignment
      * @param participantMetaStore         Redis store for participant metadata
      * @param boardMemberRepository        JPA repository for role lookups
@@ -81,6 +87,7 @@ public class CanvasActionService {
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
             final CanvasEventRepository canvasEventRepository,
+            final CardRepository cardRepository,
             final ColorPaletteService colorPaletteService,
             final ParticipantMetaStore participantMetaStore,
             final BoardMemberRepository boardMemberRepository,
@@ -90,6 +97,7 @@ public class CanvasActionService {
             final ParticipantsBroadcastService participantsBroadcastService) {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
+        this.cardRepository = cardRepository;
         this.colorPaletteService = colorPaletteService;
         this.participantMetaStore = participantMetaStore;
         this.boardMemberRepository = boardMemberRepository;
@@ -135,13 +143,46 @@ public class CanvasActionService {
                     new ErrorPayload("VIEWER role cannot send UNDO"));
             return;
         }
+        if (isCardMutation(eventType) && isViewer(boardId, principal.userId())) {
+            // Deliberately no dedicated error frame here, unlike UNDO above — a silent refusal
+            // matches the reference whiteboard's behaviour for every card:* mutation (§3.12 of
+            // the parity spec), whereas UNDO's targeted error is a pre-existing, unrelated
+            // behaviour of this repo that EN08.4 does not extend to card mutations (Gate 1
+            // decision, see EN08.4's backlog file).
+            LOG.warn("Card mutation rejected: VIEWER role cannot write — type={} user={} board={}",
+                    eventType, principal.userId(), boardId);
+            return;
+        }
         switch (eventType) {
             case JOIN -> handleJoin(boardId, message, principal, sessionId);
             case LEAVE -> handleLeave(boardId, principal, sessionId);
             case DRAW -> handleDraw(boardId, message, principal);
             case CURSOR_MOVE -> handleCursorMove(boardId, message, principal);
             case UNDO -> handleUndo(boardId, message, principal);
+            case CARD_CREATE -> handleCardCreate(boardId, message, principal);
+            case CARD_MOVE -> handleCardMove(boardId, message, principal);
+            case CARD_RESIZE -> handleCardResize(boardId, message, principal);
+            case CARD_UPDATE -> handleCardUpdate(boardId, message, principal);
+            case CARD_RECOLOR -> handleCardRecolor(boardId, message, principal);
+            case CARD_DELETE -> handleCardDelete(boardId, message, principal);
+            case CARD_LAYER -> handleCardLayer(boardId, message, principal);
         }
+    }
+
+    /**
+     * Returns whether the given event type mutates the durable {@link Card} table and
+     * therefore requires {@code canWrite} (OWNER or EDITOR) — every {@code CARD_*} type
+     * except none (all seven are mutations; there is no read-only card action over STOMP,
+     * board-state on JOIN being the read path).
+     *
+     * @param eventType the event type to check
+     * @return {@code true} for any {@code CARD_*} type
+     */
+    private boolean isCardMutation(final CanvasEventType eventType) {
+        return switch (eventType) {
+            case CARD_CREATE, CARD_MOVE, CARD_RESIZE, CARD_UPDATE, CARD_RECOLOR, CARD_DELETE, CARD_LAYER -> true;
+            default -> false;
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -183,6 +224,16 @@ public class CanvasActionService {
 
         broadcast(boardId, principal, CanvasEventType.JOIN, broadcastData);
         participantsBroadcastService.broadcast(principal.tenantId(), boardId);
+
+        List<CardDto> cards = cardRepository
+                .findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(boardId, principal.tenantId())
+                .stream()
+                .map(this::toDto)
+                .toList();
+        messagingTemplate.convertAndSendToUser(
+                principal.getName(), "/queue/board-state",
+                new BoardStatePayload(boardId.toString(), cards));
+
         LOG.info("Canvas JOIN: board={} user={} displayName={}", boardId, principal.userId(), displayName);
     }
 
@@ -238,6 +289,167 @@ public class CanvasActionService {
         Map<String, Object> data = message.data() != null ? message.data() : Map.of();
         broadcast(boardId, principal, CanvasEventType.UNDO, data);
         LOG.debug("Canvas UNDO broadcast: board={} user={}", boardId, principal.userId());
+    }
+
+    /**
+     * Handles a CARD_CREATE action: persists a new {@link Card} and broadcasts it.
+     *
+     * <p>{@code type} is parsed tolerantly — an unknown or missing value falls back to
+     * {@link CardType#TEXT}, never an exception (parity spec §3.4). {@code clientTag}, if
+     * present, is echoed back in the broadcast but never persisted (lets the sending client
+     * reconcile its own optimistic local object with the server-assigned id).
+     */
+    private void handleCardCreate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        CardType type = parseCardType(data.get("type"));
+        String content = (String) data.getOrDefault("content", "");
+        double posX = toDouble(data.get("posX"), 0);
+        double posY = toDouble(data.get("posY"), 0);
+
+        Card card = new Card(boardId, principal.tenantId(), type, content, posX, posY, Instant.now());
+        if (data.get("color") instanceof String c) {
+            card.setColor(c);
+        }
+        if (data.get("width") != null) {
+            card.setWidth(toDouble(data.get("width"), card.getWidth()));
+        }
+        if (data.get("height") != null) {
+            card.setHeight(toDouble(data.get("height"), card.getHeight()));
+        }
+        if (data.get("layer") != null) {
+            card.setLayer((int) toDouble(data.get("layer"), card.getLayer()));
+        }
+        cardRepository.save(card);
+
+        Map<String, Object> broadcastData = new HashMap<>();
+        broadcastData.put("card", toDto(card));
+        if (data.get("clientTag") != null) {
+            broadcastData.put("clientTag", data.get("clientTag"));
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_CREATE, broadcastData);
+        LOG.debug("Card created: id={} board={} type={}", card.getId(), boardId, type);
+    }
+
+    /**
+     * Handles a CARD_MOVE action: moves a card if it exists, belongs to this board, and is
+     * not locked; refused silently otherwise (no broadcast, no error frame).
+     */
+    private void handleCardMove(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        double posX = toDouble(data.get("posX"), 0);
+        double posY = toDouble(data.get("posY"), 0);
+        int updated = cardRepository.moveIfUnlocked(id, boardId, posX, posY);
+        if (updated == 0) {
+            LOG.debug("Card move refused (locked, missing, or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_MOVE,
+                Map.of("id", id.toString(), "posX", posX, "posY", posY));
+    }
+
+    /**
+     * Handles a CARD_RESIZE action: resizes a card if it exists, belongs to this board, and
+     * is not locked; refused silently otherwise.
+     */
+    private void handleCardResize(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        double width = toDouble(data.get("width"), 192);
+        double height = toDouble(data.get("height"), 128);
+        int updated = cardRepository.resizeIfUnlocked(id, boardId, width, height);
+        if (updated == 0) {
+            LOG.debug("Card resize refused (locked, missing, or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_RESIZE,
+                Map.of("id", id.toString(), "width", width, "height", height));
+    }
+
+    /**
+     * Handles a CARD_UPDATE action: updates a card's content if it exists, belongs to this
+     * board, and is not locked; refused silently otherwise.
+     */
+    private void handleCardUpdate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        String content = (String) data.getOrDefault("content", "");
+        int updated = cardRepository.updateContentIfUnlocked(id, boardId, content);
+        if (updated == 0) {
+            LOG.debug("Card update refused (locked, missing, or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_UPDATE,
+                Map.of("id", id.toString(), "content", content));
+    }
+
+    /**
+     * Handles a CARD_RECOLOR action: recolors a card if it exists, belongs to this board, and
+     * is not locked; refused silently otherwise.
+     */
+    private void handleCardRecolor(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        String color = (String) data.getOrDefault("color", "#FFEB3B");
+        int updated = cardRepository.recolorIfUnlocked(id, boardId, color);
+        if (updated == 0) {
+            LOG.debug("Card recolor refused (locked, missing, or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_RECOLOR,
+                Map.of("id", id.toString(), "color", color));
+    }
+
+    /**
+     * Handles a CARD_DELETE action: deletes a card scoped by board. Idempotent — deleting an
+     * id that does not exist (already deleted, wrong board, or never existed) is a silent
+     * no-op, never an exception. Deliberately not guarded by {@code locked} in this Socle.
+     */
+    private void handleCardDelete(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        long deleted = cardRepository.deleteByIdAndBoardId(id, boardId);
+        if (deleted == 0) {
+            LOG.debug("Card delete no-op (already deleted or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_DELETE, Map.of("id", id.toString()));
+    }
+
+    /**
+     * Handles a CARD_LAYER action: changes a card's Z-order layer. Deliberately not guarded
+     * by {@code locked} — the sole mutation the parity spec does not protect with the lock
+     * (§4.6).
+     */
+    private void handleCardLayer(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        int layer = (int) toDouble(data.get("layer"), 1);
+        int updated = cardRepository.updateLayer(id, boardId, layer);
+        if (updated == 0) {
+            LOG.debug("Card layer change no-op (missing or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_LAYER,
+                Map.of("id", id.toString(), "layer", layer));
     }
 
     // -------------------------------------------------------------------------
@@ -305,5 +517,80 @@ public class CanvasActionService {
             LOG.warn("Could not serialise canvas payload: {}", e.getMessage());
             return "{}";
         }
+    }
+
+    /**
+     * Parses a raw {@code type} value against {@link CardType}, falling back to
+     * {@link CardType#TEXT} for {@code null}, blank, or unrecognised values — never throws
+     * (parity spec §3.4: an unknown card type is dropped and the card falls back to TEXT,
+     * not rejected with an error).
+     *
+     * @param rawType the raw value from the incoming message's {@code data} map
+     * @return the parsed {@link CardType}, or {@link CardType#TEXT} as a fallback
+     */
+    private CardType parseCardType(final Object rawType) {
+        if (!(rawType instanceof String s) || s.isBlank()) {
+            return CardType.TEXT;
+        }
+        try {
+            return CardType.valueOf(s.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return CardType.TEXT;
+        }
+    }
+
+    /**
+     * Parses a raw card {@code id} value into a {@link UUID}, returning {@code null} (rather
+     * than throwing) for a missing or malformed value so the caller can silently drop the
+     * action — a forged/garbled id must never crash the STOMP session.
+     *
+     * @param rawId the raw value from the incoming message's {@code data} map
+     * @return the parsed UUID, or {@code null} if missing/malformed
+     */
+    private UUID parseCardId(final Object rawId) {
+        if (!(rawId instanceof String s)) {
+            return null;
+        }
+        try {
+            return UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Coerces a JSON-deserialised numeric value (typically {@link Integer}, {@link Long}, or
+     * {@link Double} depending on how Jackson represented the literal) to a {@code double},
+     * without risking a {@link ClassCastException} from assuming one specific boxed type.
+     *
+     * @param rawValue     the raw value from the incoming message's {@code data} map
+     * @param defaultValue the value to return if {@code rawValue} is not a {@link Number}
+     * @return the numeric value as a {@code double}, or {@code defaultValue}
+     */
+    private double toDouble(final Object rawValue, final double defaultValue) {
+        return rawValue instanceof Number n ? n.doubleValue() : defaultValue;
+    }
+
+    /**
+     * Maps a persisted {@link Card} to its wire {@link CardDto}, parsing the opaque {@code meta}
+     * JSONB column (if present) into a generic map.
+     *
+     * @param card the persisted card
+     * @return the corresponding {@link CardDto}
+     */
+    @SuppressWarnings("unchecked")
+    private CardDto toDto(final Card card) {
+        Map<String, Object> meta = null;
+        if (card.getMeta() != null) {
+            try {
+                meta = objectMapper.readValue(card.getMeta(), Map.class);
+            } catch (Exception e) {
+                LOG.warn("Could not parse card meta JSON: cardId={} error={}", card.getId(), e.getMessage());
+            }
+        }
+        return CardDto.of(
+                card.getId(), card.getType().name(), card.getContent(), meta,
+                card.getPosX(), card.getPosY(), card.getWidth(), card.getHeight(), card.getColor(),
+                card.getGroupId(), card.getGroupColor(), card.isLocked(), card.getLayer());
     }
 }

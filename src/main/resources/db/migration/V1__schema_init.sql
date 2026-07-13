@@ -60,6 +60,30 @@ CREATE TABLE IF NOT EXISTS collaboratif.canvas_event (
 );
 CREATE INDEX IF NOT EXISTS idx_canvas_event_board ON collaboratif.canvas_event(board_id, created_at ASC);
 
+-- EN08.4: card — durable current-state table for whiteboard objects (one row per object,
+-- updated in place), distinct from canvas_event's append-only ephemeral log above. Defaults
+-- (192x128, #FFEB3B, layer 1, locked false) match the reference whiteboard's card defaults.
+CREATE TABLE IF NOT EXISTS collaboratif.card (
+    id          UUID             NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    board_id    UUID             NOT NULL REFERENCES collaboratif.board(id) ON DELETE CASCADE,
+    tenant_id   BIGINT           NOT NULL REFERENCES public.tenants(id),
+    type        VARCHAR(20)      NOT NULL,
+    content     TEXT             NOT NULL,
+    meta        JSONB,
+    pos_x       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    pos_y       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    width       DOUBLE PRECISION NOT NULL DEFAULT 192,
+    height      DOUBLE PRECISION NOT NULL DEFAULT 128,
+    color       VARCHAR(20)      NOT NULL DEFAULT '#FFEB3B',
+    group_id    UUID,
+    group_color VARCHAR(20),
+    locked      BOOLEAN          NOT NULL DEFAULT false,
+    layer       INTEGER          NOT NULL DEFAULT 1,
+    created_at  TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ      NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_card_board ON collaboratif.card(board_id, layer ASC, created_at ASC);
+
 -- US08.4.1: whiteboard_template + whiteboard_template_element
 -- tenant_id nullable: NULL = global public template. Resolution Gate 1 (pivot-docs,
 -- us-tableau-depuis-template.md): in Socle only global templates exist, no tenant-scoped
