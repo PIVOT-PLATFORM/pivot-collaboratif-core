@@ -291,7 +291,8 @@ class BoardServiceTest {
     void ac08_1_9_01_findById_includesCardsWithFieldValues() {
         UUID boardId = UUID.randomUUID();
         Board board = boardWithOwner(boardId, "My Board", USER_A, TENANT_A);
-        Card card = new Card(boardId, TENANT_A, CardType.TEXT, "Hello", 1, 2, Instant.now());
+        Card card = cardWithId(UUID.randomUUID(),
+                new Card(boardId, TENANT_A, CardType.TEXT, "Hello", 1, 2, Instant.now()));
         card.setMeta("{\"title\":\"OpenGraph title\"}");
         when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
                 .thenReturn(Optional.of(board));
@@ -310,7 +311,8 @@ class BoardServiceTest {
     void ac08_1_9_02_findById_cardWithoutMeta_hasNullFieldValues() {
         UUID boardId = UUID.randomUUID();
         Board board = boardWithOwner(boardId, "My Board", USER_A, TENANT_A);
-        Card card = new Card(boardId, TENANT_A, CardType.TEXT, "No meta", 0, 0, Instant.now());
+        Card card = cardWithId(UUID.randomUUID(),
+                new Card(boardId, TENANT_A, CardType.TEXT, "No meta", 0, 0, Instant.now()));
         when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
                 .thenReturn(Optional.of(board));
         when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(false);
@@ -860,5 +862,21 @@ class BoardServiceTest {
             throw new IllegalStateException("Failed to set board id in test", ex);
         }
         return board;
+    }
+
+    /**
+     * Sets a {@link Card}'s id via reflection, simulating a JPA-persisted entity whose id is
+     * assigned by the database (US08.1.9 {@code findById} tests — the card-to-response mapping
+     * requires a non-null id).
+     */
+    private Card cardWithId(final UUID id, final Card card) {
+        try {
+            java.lang.reflect.Field field = Card.class.getDeclaredField("id");
+            field.setAccessible(true);
+            field.set(card, id);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Failed to set card id in test", ex);
+        }
+        return card;
     }
 }
