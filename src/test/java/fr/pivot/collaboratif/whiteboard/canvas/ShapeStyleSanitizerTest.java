@@ -1,131 +1,170 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
 import org.junit.jupiter.api.Test;
-import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit tests for {@link ShapeStyleSanitizer} — the server-side style content sanitiser for
- * {@link CardType#SHAPE} cards (US08.6.3, correctif §6.4).
+ * {@link CardType#SHAPE} cards (US08.6.3, correctif §6.4), conforming to the pipe-delimited
+ * {@code '{kind}|{stroke}|{fill}|{opacity}|{rotation}'} wire format already shipped by the
+ * frontend's {@code model/shape.ts}.
  */
 class ShapeStyleSanitizerTest {
 
-    private final ShapeStyleSanitizer sanitizer = new ShapeStyleSanitizer(JsonMapper.shared());
+    private final ShapeStyleSanitizer sanitizer = new ShapeStyleSanitizer();
 
     /**
-     * Given a well-formed style payload with a whitelisted variant and valid hex colours,
-     * when sanitize() is called, then every field is preserved as-is.
+     * Given a well-formed style string with a whitelisted kind and valid hex colours, when
+     * sanitize() is called, then every field is preserved as-is.
      */
     @Test
     void sanitize_wellFormedPayload_preservesAllFields() {
-        String result = sanitizer.sanitize("{\"variant\":\"ellipse\",\"fill\":\"#112233\",\"stroke\":\"#445566\"}");
+        String result = sanitizer.sanitize("circle|#112233|#445566|0.5|45");
 
-        assertThat(result).contains("\"variant\":\"ellipse\"");
-        assertThat(result).contains("\"fill\":\"#112233\"");
-        assertThat(result).contains("\"stroke\":\"#445566\"");
+        assertThat(result).isEqualTo("circle|#112233|#445566|0.5|45");
     }
 
     /**
      * Given blank content, when sanitize() is called, then it falls back to the default
-     * rectangle variant with no fill/stroke.
+     * rect/stroke/no-fill/opacity=1/rotation=0 shape.
      */
     @Test
-    void sanitize_blankContent_fallsBackToDefaultVariant() {
+    void sanitize_blankContent_fallsBackToDefaults() {
         String result = sanitizer.sanitize("");
 
-        assertThat(result).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     /**
-     * Given {@code null} content, when sanitize() is called, then it falls back to the
-     * default rectangle variant, never throwing.
+     * Given {@code null} content, when sanitize() is called, then it falls back to the same
+     * defaults, never throwing.
      */
     @Test
-    void sanitize_nullContent_fallsBackToDefaultVariant() {
+    void sanitize_nullContent_fallsBackToDefaults() {
         String result = sanitizer.sanitize(null);
 
-        assertThat(result).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     /**
-     * Given malformed (non-JSON) content, when sanitize() is called, then it falls back to
-     * the default variant rather than throwing.
+     * Given a truncated string (missing trailing fields), when sanitize() is called, then the
+     * missing fields fall back to their defaults rather than throwing.
      */
     @Test
-    void sanitize_malformedJson_fallsBackToDefaultVariant() {
-        String result = sanitizer.sanitize("not-json-at-all{{{");
+    void sanitize_truncatedContent_missingFieldsFallBackToDefaults() {
+        String result = sanitizer.sanitize("diamond");
 
-        assertThat(result).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(result).isEqualTo("diamond|#A5B4FC|none|1|0");
     }
 
     /**
-     * Given a JSON array (not an object), when sanitize() is called, then it falls back to
-     * the default variant.
+     * Given an out-of-whitelist kind (injection attempt), when sanitize() is called, then the
+     * kind is replaced with the default — the malicious value is never persisted (correctif
+     * §6.4: the reference whiteboard leaves this unconstrained).
      */
     @Test
-    void sanitize_jsonArrayInsteadOfObject_fallsBackToDefaultVariant() {
-        String result = sanitizer.sanitize("[1,2,3]");
+    void sanitize_unknownKind_isReplacedWithDefault() {
+        String result = sanitizer.sanitize("<script>alert(1)</script>|#112233|none|1|0");
 
-        assertThat(result).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(result).startsWith("rect|");
     }
 
     /**
-     * Given an out-of-whitelist variant (injection attempt), when sanitize() is called,
-     * then the variant is replaced with the default — the malicious value is never
-     * persisted (correctif §6.4: the reference whiteboard leaves this unconstrained).
+     * Given a valid kind but an invalid (non-hex) stroke colour, when sanitize() is called,
+     * then the stroke falls back to the default stroke colour, not persisted as-is.
      */
     @Test
-    void sanitize_unknownVariant_isReplacedWithDefault() {
-        String result = sanitizer.sanitize("{\"variant\":\"<script>alert(1)</script>\"}");
+    void sanitize_invalidStrokeColor_fallsBackToDefault() {
+        String result = sanitizer.sanitize("rect|javascript:alert(1)|none|1|0");
 
-        assertThat(result).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     /**
-     * Given a valid variant but an invalid (non-hex) fill colour, when sanitize() is called,
-     * then the fill field is dropped, not persisted as-is.
+     * Given a valid kind but an invalid (non-hex, not "none") fill colour, when sanitize() is
+     * called, then the fill falls back to "none".
      */
     @Test
-    void sanitize_invalidFillColor_isDropped() {
-        String result = sanitizer.sanitize("{\"variant\":\"diamond\",\"fill\":\"javascript:alert(1)\"}");
+    void sanitize_invalidFillColor_fallsBackToNone() {
+        String result = sanitizer.sanitize("rect|#A5B4FC|url(javascript:alert(1))|1|0");
 
-        assertThat(result).contains("\"variant\":\"diamond\"");
-        assertThat(result).doesNotContain("fill");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     /**
-     * Given a valid variant but an invalid (non-hex) stroke colour, when sanitize() is
-     * called, then the stroke field is dropped.
+     * Given the literal fill value "none", when sanitize() is called, then it is preserved
+     * (it is a legitimate value, not a colour).
      */
     @Test
-    void sanitize_invalidStrokeColor_isDropped() {
-        String result = sanitizer.sanitize("{\"variant\":\"line\",\"stroke\":\"not-a-color\"}");
+    void sanitize_noneFill_isPreserved() {
+        String result = sanitizer.sanitize("circle|#112233|none|1|0");
 
-        assertThat(result).contains("\"variant\":\"line\"");
-        assertThat(result).doesNotContain("stroke");
+        assertThat(result).isEqualTo("circle|#112233|none|1|0");
     }
 
     /**
-     * Given an unrelated top-level field alongside a valid variant, when sanitize() is
-     * called, then the unknown field is dropped — only variant/fill/stroke ever survive.
+     * Given a 3-digit hex colour (shorthand), when sanitize() is called, then it is accepted
+     * (matches the frontend's {@code isHexColor}, which allows both 3- and 6-digit hex).
      */
     @Test
-    void sanitize_unknownField_isDropped() {
-        String result = sanitizer.sanitize("{\"variant\":\"rectangle\",\"onClick\":\"alert(1)\"}");
+    void sanitize_threeDigitHexColor_isAccepted() {
+        String result = sanitizer.sanitize("rect|#abc|#def|1|0");
 
-        assertThat(result).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(result).isEqualTo("rect|#abc|#def|1|0");
     }
 
     /**
-     * Given every whitelisted variant, when sanitize() is called, then each is preserved
-     * unchanged.
+     * Given a non-numeric opacity, when sanitize() is called, then it falls back to the
+     * default opacity (1) rather than persisting the raw garbage value.
      */
     @Test
-    void sanitize_everyWhitelistedVariant_isPreserved() {
-        for (String variant : ShapeStyleSanitizer.ALLOWED_VARIANTS) {
-            String result = sanitizer.sanitize("{\"variant\":\"" + variant + "\"}");
-            assertThat(result).isEqualTo("{\"variant\":\"" + variant + "\"}");
+    void sanitize_nonNumericOpacity_fallsBackToDefault() {
+        String result = sanitizer.sanitize("rect|#A5B4FC|none|not-a-number|0");
+
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+    }
+
+    /**
+     * Given an out-of-range opacity, when sanitize() is called, then it is clamped to [0, 1].
+     */
+    @Test
+    void sanitize_outOfRangeOpacity_isClamped() {
+        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|5|0")).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|-3|0")).isEqualTo("rect|#A5B4FC|none|0|0");
+    }
+
+    /**
+     * Given a non-numeric rotation, when sanitize() is called, then it falls back to the
+     * default rotation (0).
+     */
+    @Test
+    void sanitize_nonNumericRotation_fallsBackToDefault() {
+        String result = sanitizer.sanitize("rect|#A5B4FC|none|1|not-a-number");
+
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+    }
+
+    /**
+     * Given every whitelisted kind, when sanitize() is called with an otherwise well-formed
+     * payload, then each kind is preserved unchanged.
+     */
+    @Test
+    void sanitize_everyWhitelistedKind_isPreserved() {
+        for (String kind : ShapeStyleSanitizer.ALLOWED_KINDS) {
+            String result = sanitizer.sanitize(kind + "|#112233|none|1|0");
+            assertThat(result).isEqualTo(kind + "|#112233|none|1|0");
         }
+    }
+
+    /**
+     * Given a fractional opacity, when sanitize() is called, then it is formatted without a
+     * trailing ".0" for whole numbers but preserves genuine fractional values — matching the
+     * frontend's plain {@code Number#toString} serialisation.
+     */
+    @Test
+    void sanitize_fractionalAndWholeNumbers_areFormattedLikeJavaScript() {
+        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|1|0")).contains("|1|0");
+        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|0.5|90")).contains("|0.5|90");
     }
 }

@@ -137,7 +137,7 @@ class WhiteboardShapeCardIT {
         @SuppressWarnings("unchecked")
         Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
         assertThat(cardData.get("type")).isEqualTo("SHAPE");
-        assertThat(cardData.get("content")).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(cardData.get("content")).isEqualTo("rect|#A5B4FC|none|1|0");
         assertThat(((Number) cardData.get("width")).doubleValue()).isEqualTo(192.0);
         assertThat(((Number) cardData.get("height")).doubleValue()).isEqualTo(128.0);
         assertThat(cardData.get("color")).isEqualTo("#FFEB3B");
@@ -149,7 +149,7 @@ class WhiteboardShapeCardIT {
                 .findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(board.getId(), tenantId);
         assertThat(cards).hasSize(1);
         assertThat(cards.get(0).getType()).isEqualTo(CardType.SHAPE);
-        assertThat(cards.get(0).getContent()).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(cards.get(0).getContent()).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     // =========================================================================
@@ -171,7 +171,7 @@ class WhiteboardShapeCardIT {
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "CARD_CREATE", "data", Map.of(
                         "type", "SHAPE",
-                        "content", "{\"variant\":\"ellipse\",\"fill\":\"#112233\",\"stroke\":\"#445566\"}",
+                        "content", "circle|#445566|#112233|0.8|0",
                         "width", 300.0,
                         "height", 150.0,
                         "color", "#00FF00",
@@ -181,8 +181,7 @@ class WhiteboardShapeCardIT {
         @SuppressWarnings("unchecked")
         Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
         assertThat(cardData.get("type")).isEqualTo("SHAPE");
-        assertThat((String) cardData.get("content")).contains("\"variant\":\"ellipse\"")
-                .contains("\"fill\":\"#112233\"").contains("\"stroke\":\"#445566\"");
+        assertThat((String) cardData.get("content")).isEqualTo("circle|#445566|#112233|0.8|0");
         assertThat(((Number) cardData.get("width")).doubleValue()).isEqualTo(300.0);
         assertThat(((Number) cardData.get("height")).doubleValue()).isEqualTo(150.0);
         assertThat(cardData.get("color")).isEqualTo("#00FF00");
@@ -208,19 +207,19 @@ class WhiteboardShapeCardIT {
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "CARD_CREATE", "data", Map.of(
                         "type", "SHAPE",
-                        "content", "{\"variant\":\"<script>alert(1)</script>\",\"fill\":\"javascript:alert(1)\"}")));
+                        "content", "<script>alert(1)</script>|url(javascript:alert(1))|javascript:alert(1)|1|0")));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         @SuppressWarnings("unchecked")
         Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
         String content = (String) cardData.get("content");
         assertThat(content).doesNotContain("script").doesNotContain("javascript:");
-        assertThat(content).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(content).isEqualTo("rect|#A5B4FC|none|1|0");
 
         Thread.sleep(200);
         List<Card> cards = cardRepository
                 .findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(board.getId(), tenantId);
-        assertThat(cards.get(0).getContent()).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(cards.get(0).getContent()).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     // =========================================================================
@@ -336,11 +335,11 @@ class WhiteboardShapeCardIT {
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "CARD_UPDATE",
                         "data", Map.of("id", shape.getId().toString(),
-                                "content", "{\"variant\":\"ellipse\"}")));
+                                "content", "circle|#112233|none|1|0")));
 
         Thread.sleep(300);
         Card reloaded = cardRepository.findById(shape.getId()).orElseThrow();
-        assertThat(reloaded.getContent()).isEqualTo("{\"variant\":\"rectangle\"}");
+        assertThat(reloaded.getContent()).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     // =========================================================================
@@ -363,13 +362,13 @@ class WhiteboardShapeCardIT {
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "CARD_UPDATE",
                         "data", Map.of("id", shape.getId().toString(),
-                                "content", "{\"variant\":\"diamond\",\"fill\":\"not-a-hex\"}")));
+                                "content", "diamond|#112233|not-a-hex|1|0")));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:updated");
         assertThat(msg.data().get("id")).isEqualTo(shape.getId().toString());
         String broadcastContent = (String) msg.data().get("content");
-        assertThat(broadcastContent).contains("\"variant\":\"diamond\"").doesNotContain("fill");
+        assertThat(broadcastContent).isEqualTo("diamond|#112233|none|1|0");
 
         Card reloaded = cardRepository.findById(shape.getId()).orElseThrow();
         assertThat(reloaded.getContent()).isEqualTo(broadcastContent);
@@ -433,7 +432,7 @@ class WhiteboardShapeCardIT {
     }
 
     private Card seedShapeCard(final UUID boardId, final long tenantId, final boolean locked) {
-        Card card = new Card(boardId, tenantId, CardType.SHAPE, "{\"variant\":\"rectangle\"}", 0, 0, Instant.now());
+        Card card = new Card(boardId, tenantId, CardType.SHAPE, "rect|#A5B4FC|none|1|0", 0, 0, Instant.now());
         card.setLocked(locked);
         return cardRepository.save(card);
     }
