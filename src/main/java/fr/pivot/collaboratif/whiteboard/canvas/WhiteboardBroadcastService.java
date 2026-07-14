@@ -34,12 +34,20 @@ public class WhiteboardBroadcastService {
     }
 
     /**
-     * Broadcasts a {@link CanvasEventType#RESET} event to every participant currently
-     * subscribed to the board's canvas topic (US08.2.4).
+     * Broadcasts a board-reset notification to every participant currently subscribed to the
+     * board's canvas topic (US08.2.4).
      *
      * <p>The reset itself (deleting the board's persisted DRAW events) has already happened
      * server-side by the time this is called — this only notifies connected clients so they
      * clear their local canvas view in real time.
+     *
+     * <p>Wire type is {@code "board:resetted"} — the frontend ({@code board.store.ts}, the
+     * PouetPouet-mirroring wire vocabulary, see EN08.4 recette finding on
+     * pivot-collaboratif-core#68) listens for that exact past-tense name, not
+     * {@link CanvasEventType#RESET}'s bare Java enum name. Sending the wrong name meant the
+     * REST reset call itself always succeeded, but every already-connected client (other than
+     * the one who triggered it) never saw the board actually clear in real time — this
+     * notification was silently dropped client-side.
      *
      * @param boardId the board UUID
      * @param userId  the {@code public.users.id} of the user who triggered the reset
@@ -47,7 +55,7 @@ public class WhiteboardBroadcastService {
     public void broadcastReset(final UUID boardId, final Long userId) {
         String destination = BOARD_TOPIC_PREFIX + boardId;
         BroadcastCanvasMessage msg = new BroadcastCanvasMessage(
-                CanvasEventType.RESET.name(), boardId.toString(), userId.toString(), Map.of());
+                "board:resetted", boardId.toString(), userId.toString(), Map.of());
         messagingTemplate.convertAndSend(destination, msg);
     }
 }
