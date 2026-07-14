@@ -1,3 +1,15 @@
+# [0.3.0](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.2.1...v0.3.0) (2026-07-14)
+
+
+### Bug Fixes
+
+* **whiteboard:** le reset board diffuse "board:resetted", pas "RESET" ([#72](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/72)) ([c5b381b](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/c5b381b220e891df5c808a0aaf6ae395a14c94c4)), closes [WhiteboardBroadcastService#broadcastReset](https://github.com/WhiteboardBroadcastService/issues/broadcastReset) [#68](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/68) [#68](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/68)
+
+
+### Features
+
+* **whiteboard:** EN08.4 — modèle Card typé + contrats CARD_* (STOMP) ([#68](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/68)) ([0ed57ed](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/0ed57ed36d9a962eaae4c051bcbd2448abceadb4))
+
 ## [0.2.1](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.2.0...v0.2.1) (2026-07-14)
 
 
