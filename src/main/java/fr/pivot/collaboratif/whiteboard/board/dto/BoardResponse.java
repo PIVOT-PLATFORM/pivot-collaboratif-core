@@ -10,8 +10,10 @@ import java.util.UUID;
 /**
  * Response payload representing a whiteboard board visible to the caller.
  *
- * <p>The {@code role} field reflects the caller's role on this board (e.g. {@code "owner"},
- * {@code "editor"}, {@code "viewer"}). After creation, it is always {@code "owner"}.
+ * <p>The {@code role} field reflects the caller's role on this board (e.g. {@code "OWNER"},
+ * {@code "EDITOR"}, {@code "VIEWER"} — {@link BoardRole#name()}, matching {@code MemberResponse}
+ * and the WS JOIN broadcast's casing, see {@code CanvasActionService#resolveRoleName}). After
+ * creation, it is always {@code "OWNER"}.
  *
  * <p>Fields {@code thumbnailUrl} and {@code activeParticipantCount} are stubs for
  * future integrations (thumbnail storage and WebSocket presence registry respectively).
@@ -26,7 +28,7 @@ import java.util.UUID;
  *
  * @param id                     unique identifier of the board
  * @param title                  human-readable board title
- * @param role                   the caller's role on this board (lowercase)
+ * @param role                   the caller's role on this board ({@link BoardRole#name()})
  * @param createdAt              timestamp when the board was created
  * @param updatedAt              timestamp of the last board update
  * @param tenantId               {@code public.tenants.id} of the tenant that owns this board
@@ -105,7 +107,7 @@ public record BoardResponse(
         return new BoardResponse(
                 board.getId(),
                 board.getTitle(),
-                callerRole.name().toLowerCase(),
+                callerRole.name(),
                 board.getCreatedAt(),
                 board.getUpdatedAt(),
                 board.getTenantId(),

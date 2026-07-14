@@ -98,7 +98,7 @@ class BoardServiceTest {
         BoardResponse response = boardService.create("My Board", USER_A, TENANT_A);
 
         assertThat(response.title()).isEqualTo("My Board");
-        assertThat(response.role()).isEqualTo("owner");
+        assertThat(response.role()).isEqualTo("OWNER");
         assertThat(response.tenantId()).isEqualTo(TENANT_A);
         assertThat(response.favorite()).isFalse();
     }
@@ -171,7 +171,7 @@ class BoardServiceTest {
         BoardPageResponse page = boardService.findAccessible(USER_A, TENANT_A, null, 0, 20);
 
         assertThat(page.boards()).hasSize(1);
-        assertThat(page.boards().get(0).role()).isEqualTo("owner");
+        assertThat(page.boards().get(0).role()).isEqualTo("OWNER");
         assertThat(page.boards().get(0).favorite()).isFalse();
         assertThat(page.currentPage()).isEqualTo(0);
         assertThat(page.totalElements()).isEqualTo(1);
@@ -243,7 +243,7 @@ class BoardServiceTest {
         BoardResponse response = boardService.findById(boardId, USER_A, TENANT_A);
 
         assertThat(response.id()).isEqualTo(boardId);
-        assertThat(response.role()).isEqualTo("owner");
+        assertThat(response.role()).isEqualTo("OWNER");
     }
 
     @Test
@@ -272,7 +272,7 @@ class BoardServiceTest {
 
         BoardResponse response = boardService.findById(boardId, editorId, TENANT_A);
 
-        assertThat(response.role()).isEqualTo("editor");
+        assertThat(response.role()).isEqualTo("EDITOR");
     }
 
     // -------------------------------------------------------------------------
@@ -507,7 +507,7 @@ class BoardServiceTest {
 
         assertThat(page.boards()).hasSize(1);
         assertThat(page.boards().get(0).deletedAt()).isEqualTo(deletedAt);
-        assertThat(page.boards().get(0).role()).isEqualTo("owner");
+        assertThat(page.boards().get(0).role()).isEqualTo("OWNER");
     }
 
     @Test
