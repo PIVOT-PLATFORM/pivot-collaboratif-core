@@ -147,12 +147,19 @@ public class WhiteboardTemplateService {
      *
      * <p>Each persisted {@code DRAW} {@link CanvasEvent} on the board becomes one
      * {@link WhiteboardTemplateElement}, preserving chronological order via
-     * {@code displayOrder}. The element payload is copied verbatim from the canvas event
-     * (already valid JSONB); it is snapshotted as {@link CanvasElementType#SHAPE} since the
-     * live DRAW payload is intentionally opaque at this layer (it is not re-validated against
-     * the strict template whitelist here — that whitelist only governs the 3 seeded global
-     * templates, see {@link CanvasElementValidator}). A board with no canvas content yields a
-     * valid, empty template.
+     * {@code displayOrder}. The element payload is copied verbatim from the canvas event: a
+     * {@code { type, tool, payload }} envelope (see {@code CanvasEvent#payload}) that does
+     * <strong>not</strong> conform to {@link CanvasElementValidator}'s flat shape/text/image
+     * schema — that whitelist governs only the 3 seeded global templates and is not applied
+     * here. {@link CanvasElementType#SHAPE} is stored as a structural placeholder, not a
+     * validated classification of the content. There is currently no endpoint that resolves a
+     * tenant-private template (non-null {@code tenant_id}) back through
+     * {@link #initializeBoard}, which only accepts templates resolved via
+     * {@link #resolveGlobalTemplate} ({@code tenant_id IS NULL}) — so this snapshot is not
+     * replayable yet. Wiring a "create board from my saved template" endpoint must first
+     * reconcile this payload shape with {@link CanvasElementValidator}, or bypass it
+     * deliberately for this write path. A board with no canvas content yields a valid, empty
+     * template.
      *
      * @param boardId     the source board UUID (already resolved tenant-scoped and
      *                    OWNER-authorized by the caller)
