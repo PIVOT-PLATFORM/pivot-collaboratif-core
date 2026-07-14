@@ -29,4 +29,16 @@ public interface BoardMemberRepository extends JpaRepository<BoardMember, BoardM
      * @return list of all members (includes the OWNER entry)
      */
     java.util.List<BoardMember> findAllByIdBoardIdOrderByJoinedAtAsc(UUID boardId);
+
+    /**
+     * Counts active shares on a board — every membership row except the given role (US08.1.9,
+     * parity §2.2, "shareCount = nombre de partages actifs, membres hors owner"). The owner's
+     * own membership row (always present, see {@code BoardService#create}) is excluded by
+     * passing {@link BoardRole#OWNER}.
+     *
+     * @param boardId      the board UUID
+     * @param excludedRole the role to exclude from the count (the owner's role)
+     * @return the number of members on this board holding a role other than {@code excludedRole}
+     */
+    long countByIdBoardIdAndRoleNot(UUID boardId, BoardRole excludedRole);
 }

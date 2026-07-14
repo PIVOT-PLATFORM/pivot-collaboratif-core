@@ -42,6 +42,13 @@ import java.util.UUID;
  * @param enabledActivities      whitelisted activity codes enabled on this board
  * @param deletedAt              trash timestamp, populated only in trash listings, otherwise
  *                               {@code null}
+ * @param shareCount             number of active shares (members other than the owner) on this
+ *                               board (US08.1.9, parity §2.2)
+ * @param cards                  the board's cards with their field values, populated only by
+ *                               {@code GET /whiteboard/boards/{boardId}} (US08.1.9) — empty in
+ *                               every other response (list/create/patch/trash), which
+ *                               deliberately do not fetch cards to avoid overloading those
+ *                               queries
  */
 public record BoardResponse(
         UUID id,
@@ -57,21 +64,42 @@ public record BoardResponse(
         String coverImage,
         Integer maxParticipants,
         List<String> enabledActivities,
-        Instant deletedAt) {
+        Instant deletedAt,
+        int shareCount,
+        List<BoardCardResponse> cards) {
 
     /**
      * Creates a {@link BoardResponse} from a {@link Board} entity and the caller's resolved
      * {@link BoardRole}, outside of a trash listing context ({@code deletedAt} always
-     * {@code null} in the response).
+     * {@code null} in the response) and without embedded cards.
      *
      * @param board      the board entity
      * @param callerRole the role the calling user holds on this board
      * @param favorite   {@code true} if the calling user has favorited this board
+     * @param shareCount number of active shares (members other than the owner) on this board
      * @return a populated response record
      */
     public static BoardResponse from(
-            final Board board, final BoardRole callerRole, final boolean favorite) {
-        return build(board, callerRole, favorite, false);
+            final Board board, final BoardRole callerRole, final boolean favorite,
+            final int shareCount) {
+        return build(board, callerRole, favorite, false, shareCount, List.of());
+    }
+
+    /**
+     * Creates a {@link BoardResponse} from a {@link Board} entity, embedding its cards with
+     * field values (US08.1.9) — used exclusively by {@code GET /whiteboard/boards/{boardId}}.
+     *
+     * @param board      the board entity
+     * @param callerRole the role the calling user holds on this board
+     * @param favorite   {@code true} if the calling user has favorited this board
+     * @param shareCount number of active shares (members other than the owner) on this board
+     * @param cards      the board's cards with their field values
+     * @return a populated response record with {@code cards} set
+     */
+    public static BoardResponse withCards(
+            final Board board, final BoardRole callerRole, final boolean favorite,
+            final int shareCount, final List<BoardCardResponse> cards) {
+        return build(board, callerRole, favorite, false, shareCount, cards);
     }
 
     /**
@@ -81,29 +109,21 @@ public record BoardResponse(
      * @param board      the trashed board entity
      * @param callerRole the role the calling user holds on this board (always OWNER, since
      *                   only the owner may list the trash)
+     * @param shareCount number of active shares (members other than the owner) on this board
      * @return a populated response record with {@code deletedAt} set
      */
-    public static BoardResponse forTrash(final Board board, final BoardRole callerRole) {
-        return build(board, callerRole, false, true);
-    }
-
-    /**
-     * Backward-compatible factory without a favorite flag (defaults to {@code false}) —
-     * kept only for call sites that do not (yet) resolve the caller's favorite state.
-     *
-     * @param board      the board entity
-     * @param callerRole the role the calling user holds on this board
-     * @return a populated response record with {@code favorite=false}
-     */
-    public static BoardResponse from(final Board board, final BoardRole callerRole) {
-        return from(board, callerRole, false);
+    public static BoardResponse forTrash(
+            final Board board, final BoardRole callerRole, final int shareCount) {
+        return build(board, callerRole, false, true, shareCount, List.of());
     }
 
     private static BoardResponse build(
             final Board board,
             final BoardRole callerRole,
             final boolean favorite,
-            final boolean includeDeletedAt) {
+            final boolean includeDeletedAt,
+            final int shareCount,
+            final List<BoardCardResponse> cards) {
         return new BoardResponse(
                 board.getId(),
                 board.getTitle(),
@@ -112,12 +132,15 @@ public record BoardResponse(
                 board.getUpdatedAt(),
                 board.getTenantId(),
                 null,  // thumbnailUrl: null in Socle
-                0,     // TODO: wire to WS presence registry (EN08.1)
+                0,     // TODO: wire to WS presence registry (EN08.1) — distinct from the
+                       // per-board polling GET /whiteboard/boards/presence (US08.1.9)
                 favorite,
                 board.getDescription(),
                 board.getCoverImage(),
                 board.getMaxParticipants(),
                 List.copyOf(board.getEnabledActivities()),
-                includeDeletedAt ? board.getDeletedAt() : null);
+                includeDeletedAt ? board.getDeletedAt() : null,
+                shareCount,
+                List.copyOf(cards));
     }
 }
