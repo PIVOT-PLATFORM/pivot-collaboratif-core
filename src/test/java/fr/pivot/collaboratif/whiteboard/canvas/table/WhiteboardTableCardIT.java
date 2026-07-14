@@ -262,7 +262,12 @@ class WhiteboardTableCardIT {
         assertThat(cards).hasSize(1);
         String persisted = cards.get(0).getContent();
         assertThat(persisted).doesNotContain("<script", "</script>", "<img", "onerror", "<", ">");
-        assertThat(persisted).contains("alert(1)", "alert(2)");
+        // The first cell's "alert(1)" is plain text surrounding <script>/</script> — it
+        // survives tag-stripping. The second cell's "alert(2)" lives *inside* the <img …>
+        // tag's onerror attribute, not as surrounding text — the whole tag (attribute value
+        // included) is removed, which is the safer outcome, not a partial strip.
+        assertThat(persisted).contains("alert(1)");
+        assertThat(persisted).doesNotContain("alert(2)");
     }
 
     // =========================================================================
