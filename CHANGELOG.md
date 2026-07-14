@@ -1,3 +1,10 @@
+## [0.2.1](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.2.0...v0.2.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **api:** BoardResponse.role en majuscules, aligné sur MemberResponse/WS JOIN ([#70](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/70)) ([904657f](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/904657ff14ec214f715b1f36df8f6b9983414809))
+
 # [0.2.0](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.1.2...v0.2.0) (2026-07-14)
 
 
