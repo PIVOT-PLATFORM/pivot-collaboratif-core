@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -31,6 +32,19 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
      * @return the board's cards; empty if none exist
      */
     List<Card> findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(UUID boardId, Long tenantId);
+
+    /**
+     * Returns a card scoped by board ownership, without any lock guard — used to read
+     * type-specific state (e.g. determining whether a {@code CARD_UPDATE}'s incoming
+     * {@code content} needs {@link CardType#SHAPE} style sanitisation, US08.6.3) before the
+     * guarded mutation itself runs. Never used to bypass the {@code locked}/board-ownership
+     * guard on the mutation query itself.
+     *
+     * @param id      the card UUID
+     * @param boardId the owning board UUID (defence in depth against a cross-board id)
+     * @return the card if found and on this board; empty otherwise
+     */
+    Optional<Card> findByIdAndBoardId(UUID id, UUID boardId);
 
     /**
      * Moves a card, guarded by lock state and board ownership in the same query.
