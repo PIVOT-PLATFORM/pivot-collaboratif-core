@@ -347,6 +347,11 @@ class WhiteboardLabelCardIT {
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:deleted");
         assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
+
+        // The broadcast is sent from inside handleCardDelete's @Transactional method, before
+        // the transaction actually commits — give it a moment to flush, same pattern as
+        // WhiteboardCardIT's card creation/deletion assertions.
+        Thread.sleep(200);
         assertThat(cardRepository.findById(card.getId())).isEmpty();
     }
 
