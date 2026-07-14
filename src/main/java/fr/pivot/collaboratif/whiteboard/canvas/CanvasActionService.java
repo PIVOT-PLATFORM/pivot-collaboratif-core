@@ -2,7 +2,6 @@ package fr.pivot.collaboratif.whiteboard.canvas;
 
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRole;
-import fr.pivot.collaboratif.whiteboard.canvas.dto.BoardStatePayload;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
@@ -35,10 +34,23 @@ import java.util.UUID;
  * <p>Broadcast destinations:
  * <ul>
  *   <li>{@code /topic/whiteboard/{boardId}} — all canvas actions (JOIN, LEAVE, DRAW,
- *       CURSOR_MOVE, UNDO) enriched with server-side fields (colour for JOIN).</li>
+ *       CURSOR_MOVE, UNDO, CARD_*) enriched with server-side fields (colour for JOIN), plus
+ *       the {@code board:state} reply on JOIN (below).</li>
  *   <li>{@code /topic/whiteboard/{boardId}/presence} — PARTICIPANTS_UPDATE with the
  *       full list of connected participants, emitted on every JOIN and LEAVE.</li>
  * </ul>
+ *
+ * <p><strong>Wire naming</strong> is resolved via {@link CanvasEventType#fromWire} (incoming)
+ * and {@link CanvasEventType#wireOut()} (outgoing) — see that class's Javadoc for why these
+ * differ from the bare Java enum name (EN08.4 recette finding, #68).
+ *
+ * <p><strong>{@code board:state} on JOIN</strong> is broadcast to the whole room on the main
+ * topic (not a per-user queue) — the frontend's {@code StompBoardTransport} subscribes to a
+ * single topic and has no per-user queue subscription, so a targeted
+ * {@code convertAndSendToUser} reply would never reach it. Every already-connected client
+ * harmlessly re-applies the same (idempotent) state; {@code role} is deliberately omitted
+ * from this payload since it is per-recipient and this is a room-wide broadcast — role stays
+ * authoritative via the REST board GET.
  *
  * <p>Conflict strategy: Last-Write-Wins — the most recently received DRAW event wins.
  * No OT/CRDT resolution is implemented in the Socle.
@@ -128,10 +140,8 @@ public class CanvasActionService {
             LOG.warn("Received canvas message with null type — board={} user={}", boardId, principal.userId());
             return;
         }
-        CanvasEventType eventType;
-        try {
-            eventType = CanvasEventType.valueOf(message.type().toUpperCase());
-        } catch (IllegalArgumentException e) {
+        CanvasEventType eventType = CanvasEventType.fromWire(message.type());
+        if (eventType == null) {
             LOG.warn("Unknown canvas action type '{}' — dropped board={} user={}",
                     message.type(), boardId, principal.userId());
             return;
@@ -197,8 +207,10 @@ public class CanvasActionService {
 
     /**
      * Handles a JOIN action: assigns colour, stores participant metadata, registers the
-     * session in the presence liveness registry, broadcasts the JOIN event and emits
-     * PARTICIPANTS_UPDATE.
+     * session in the presence liveness registry, broadcasts the JOIN event, emits
+     * PARTICIPANTS_UPDATE, and broadcasts a {@code board:state} snapshot of the board's
+     * current cards to the whole room (see the class-level Javadoc for why this is a room
+     * broadcast rather than a targeted per-user reply).
      *
      * <p>Colour assignment is deterministic by {@code userId} ({@link ColorPaletteService}),
      * so a reconnection or a duplicate JOIN from another tab of the same user keeps the same
@@ -211,7 +223,7 @@ public class CanvasActionService {
             final CanvasActionMessage message,
             final StompPrincipal principal,
             final String sessionId) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         String displayName = (String) data.getOrDefault("displayName", "Anonymous");
         String avatarUrl = (String) data.get("avatarUrl");
         String color = colorPaletteService.colorForUser(principal.userId());
@@ -236,9 +248,12 @@ public class CanvasActionService {
                 .stream()
                 .map(this::toDto)
                 .toList();
-        messagingTemplate.convertAndSendToUser(
-                principal.getName(), "/queue/board-state",
-                new BoardStatePayload(boardId.toString(), cards));
+        Map<String, Object> stateData = new HashMap<>();
+        stateData.put("cards", cards);
+        stateData.put("connections", List.of());
+        stateData.put("frames", List.of());
+        stateData.put("fields", List.of());
+        broadcast(boardId, principal, "board:state", stateData);
 
         LOG.info("Canvas JOIN: board={} user={} displayName={}", boardId, principal.userId(), displayName);
     }
@@ -266,7 +281,7 @@ public class CanvasActionService {
      * Persistence implements Last-Write-Wins (Socle strategy).
      */
     private void handleDraw(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         String payloadJson = serialise(data);
 
         CanvasEvent event = new CanvasEvent(
@@ -283,7 +298,7 @@ public class CanvasActionService {
      * ephemeral data not worth storing).
      */
     private void handleCursorMove(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         broadcast(boardId, principal, CanvasEventType.CURSOR_MOVE, data);
     }
 
@@ -292,7 +307,7 @@ public class CanvasActionService {
      * delegated to US08.3.3.
      */
     private void handleUndo(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         broadcast(boardId, principal, CanvasEventType.UNDO, data);
         LOG.debug("Canvas UNDO broadcast: board={} user={}", boardId, principal.userId());
     }
@@ -306,7 +321,7 @@ public class CanvasActionService {
      * reconcile its own optimistic local object with the server-assigned id).
      */
     private void handleCardCreate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         CardType type = parseCardType(data.get("type"));
         String content = (String) data.getOrDefault("content", "");
         double posX = toDouble(data.get("posX"), 0);
@@ -341,7 +356,7 @@ public class CanvasActionService {
      * not locked; refused silently otherwise (no broadcast, no error frame).
      */
     private void handleCardMove(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         UUID id = parseCardId(data.get("id"));
         if (id == null) {
             return;
@@ -362,7 +377,7 @@ public class CanvasActionService {
      * is not locked; refused silently otherwise.
      */
     private void handleCardResize(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         UUID id = parseCardId(data.get("id"));
         if (id == null) {
             return;
@@ -383,7 +398,7 @@ public class CanvasActionService {
      * board, and is not locked; refused silently otherwise.
      */
     private void handleCardUpdate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         UUID id = parseCardId(data.get("id"));
         if (id == null) {
             return;
@@ -403,7 +418,7 @@ public class CanvasActionService {
      * is not locked; refused silently otherwise.
      */
     private void handleCardRecolor(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         UUID id = parseCardId(data.get("id"));
         if (id == null) {
             return;
@@ -424,7 +439,7 @@ public class CanvasActionService {
      * no-op, never an exception. Deliberately not guarded by {@code locked} in this Socle.
      */
     private void handleCardDelete(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         UUID id = parseCardId(data.get("id"));
         if (id == null) {
             return;
@@ -443,7 +458,7 @@ public class CanvasActionService {
      * (§4.6).
      */
     private void handleCardLayer(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
-        Map<String, Object> data = message.data() != null ? message.data() : Map.of();
+        Map<String, Object> data = asMap(message.data());
         UUID id = parseCardId(data.get("id"));
         if (id == null) {
             return;
@@ -463,7 +478,9 @@ public class CanvasActionService {
     // -------------------------------------------------------------------------
 
     /**
-     * Broadcasts a canvas event to all subscribers of the board's main topic.
+     * Broadcasts a canvas event to all subscribers of the board's main topic, under
+     * {@code type}'s outgoing wire name ({@link CanvasEventType#wireOut()} — distinct from
+     * the incoming name for {@code CARD_*} mutations, see that class's Javadoc).
      *
      * @param boardId   the board UUID
      * @param principal the emitting principal
@@ -475,10 +492,44 @@ public class CanvasActionService {
             final StompPrincipal principal,
             final CanvasEventType type,
             final Map<String, Object> data) {
+        broadcast(boardId, principal, type.wireOut(), data);
+    }
+
+    /**
+     * Broadcasts a server-originated message with no corresponding inbound
+     * {@link CanvasEventType} (e.g. {@code board:state}, the JOIN reply) under a raw wire
+     * type string.
+     *
+     * @param boardId   the board UUID
+     * @param principal the principal that triggered this broadcast
+     * @param wireType  the raw outgoing wire type string
+     * @param data      the type-specific payload
+     */
+    private void broadcast(
+            final UUID boardId,
+            final StompPrincipal principal,
+            final String wireType,
+            final Map<String, Object> data) {
         String destination = BOARD_TOPIC_PREFIX + boardId;
         BroadcastCanvasMessage msg = new BroadcastCanvasMessage(
-                type.name(), boardId.toString(), principal.userId().toString(), data);
+                wireType, boardId.toString(), principal.userId().toString(), data);
         messagingTemplate.convertAndSend(destination, msg);
+    }
+
+    /**
+     * Safely coerces an incoming action's polymorphic {@code data} to a field-accessible map,
+     * for handlers that read named fields off it. {@code data} is a bare string (the board id)
+     * for {@code board:join}/{@code board:leave} — those handlers don't need any field off it
+     * (the board id already comes from the destination path variable), so falling back to an
+     * empty map for a non-{@link Map} value is correct, not a data-loss workaround.
+     *
+     * @param rawData the raw {@link CanvasActionMessage#data()} value — a {@link Map},
+     *                a {@link String}, or {@code null}
+     * @return a string-keyed map, or an empty map if {@code rawData} isn't one
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(final Object rawData) {
+        return rawData instanceof Map<?, ?> ? (Map<String, Object>) rawData : Map.of();
     }
 
     /**

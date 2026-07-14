@@ -7,7 +7,6 @@ import fr.pivot.collaboratif.whiteboard.board.BoardMemberId;
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRole;
-import fr.pivot.collaboratif.whiteboard.canvas.dto.BoardStatePayload;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -53,8 +52,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>CARD_MOVE on a locked card is refused silently (0 rows affected, no broadcast).</li>
  *   <li>CARD_DELETE on an already-deleted card is an idempotent no-op, never an exception.</li>
  *   <li>A VIEWER cannot mutate a card (silent refusal, no DB change, no error frame).</li>
- *   <li>JOIN replies to the joining session alone with the board's current card list.</li>
+ *   <li>JOIN broadcasts a {@code board:state} snapshot of the board's current cards to the
+ *       whole room.</li>
  *   <li>A card id from a different board cannot be mutated via a forged destination boardId.</li>
+ *   <li>The real frontend wire vocabulary (lowercase, colon-separated — {@code card:create},
+ *       {@code board:join}, {@code board:cursor}) is accepted, and {@code CARD_*} broadcasts
+ *       go out under their past-tense wire name ({@code card:created}, not {@code CARD_CREATE}
+ *       — the actual bug this enabler shipped with, see recette finding on #68).</li>
  * </ol>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -125,7 +129,7 @@ class WhiteboardCardIT {
                 Map.of("type", "CARD_CREATE", "data", Map.of("content", "Hello board")));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        assertThat(msg.type()).isEqualTo("CARD_CREATE");
+        assertThat(msg.type()).isEqualTo("card:created");
         @SuppressWarnings("unchecked")
         Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
         assertThat(cardData.get("type")).isEqualTo("TEXT");
@@ -197,7 +201,7 @@ class WhiteboardCardIT {
                         "data", Map.of("id", card.getId().toString(), "posX", 42.0, "posY", 84.0)));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        assertThat(msg.type()).isEqualTo("CARD_MOVE");
+        assertThat(msg.type()).isEqualTo("card:moved");
         assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
 
         Card reloaded = cardRepository.findById(card.getId()).orElseThrow();
@@ -262,7 +266,7 @@ class WhiteboardCardIT {
                 Map.of("type", "CARD_CREATE", "data", Map.of("content", "still alive")));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        assertThat(msg.type()).isEqualTo("CARD_CREATE");
+        assertThat(msg.type()).isEqualTo("card:created");
         assertThat(session.isConnected()).isTrue();
     }
 
@@ -297,11 +301,11 @@ class WhiteboardCardIT {
     }
 
     // =========================================================================
-    // Test 7 — JOIN replies to the joining session alone with the board's current cards
+    // Test 7 — JOIN broadcasts a board:state snapshot of existing cards to the whole room
     // =========================================================================
 
     @Test
-    void join_replies_with_board_state_containing_existing_cards() throws Exception {
+    void join_broadcasts_board_state_containing_existing_cards() throws Exception {
         long tenantId = seedTenant();
         long ownerId = seedUser(tenantId);
         String token = issueToken(ownerId);
@@ -309,17 +313,87 @@ class WhiteboardCardIT {
         seedCard(board.getId(), tenantId, false);
         seedCard(board.getId(), tenantId, false);
 
+        // board:state is a room broadcast (not a per-user queue reply) — the frontend's
+        // StompBoardTransport only subscribes to /topic/whiteboard/{boardId} and has no
+        // per-user queue subscription, so a targeted convertAndSendToUser reply would never
+        // reach it (recette finding on #68).
         StompSession session = connectAs(token);
-        CompletableFuture<BoardStatePayload> future = new CompletableFuture<>();
-        session.subscribe("/user/queue/board-state", framHandler(BoardStatePayload.class, future));
-        Thread.sleep(200);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
 
         session.send("/app/whiteboard/" + board.getId() + "/action",
-                Map.of("type", "JOIN", "data", Map.of("displayName", "Carol")));
+                Map.of("type", "board:join", "data", board.getId().toString()));
 
-        BoardStatePayload payload = future.get(8, TimeUnit.SECONDS);
-        assertThat(payload.boardId()).isEqualTo(board.getId().toString());
-        assertThat(payload.cards()).hasSize(2);
+        BroadcastCanvasMessage msg = future.get(8, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("board:state");
+        assertThat(msg.data()).containsKeys("cards", "connections", "frames", "fields");
+        @SuppressWarnings("unchecked")
+        List<Object> cards = (List<Object>) msg.data().get("cards");
+        assertThat(cards).hasSize(2);
+        assertThat((List<?>) msg.data().get("connections")).isEmpty();
+        // role is deliberately absent — this is a room-wide broadcast, not per-recipient
+        // (see CanvasActionService class Javadoc); role stays authoritative via the REST GET.
+        assertThat(msg.data()).doesNotContainKey("role");
+    }
+
+    // =========================================================================
+    // Test 7b — the real frontend wire vocabulary is accepted (recette finding on #68)
+    // =========================================================================
+
+    @Test
+    void real_frontend_wire_names_are_accepted_end_to_end() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> createFuture = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, createFuture));
+
+        // board.store.ts#init: this.transport.emit('board:join', boardId) — data is a bare
+        // string, not an object (the exact shape that previously threw
+        // MessageConversionException before this fix).
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "board:join", "data", board.getId().toString()));
+        Thread.sleep(200);
+
+        // board.store.ts createCard: this.transport.emit('card:create', { content, posX, posY })
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "card:create", "data", Map.of("content", "post-it via real wire name")));
+
+        BroadcastCanvasMessage msg = createFuture.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("card:created");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        assertThat(cardData.get("content")).isEqualTo("post-it via real wire name");
+        assertThat(session.isConnected()).isTrue();
+    }
+
+    // =========================================================================
+    // Test 7c — board:cursor (the real wire name for CURSOR_MOVE) is accepted
+    // =========================================================================
+
+    @Test
+    void board_cursor_wire_name_is_accepted_and_broadcasts_as_cursor_move() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "board:cursor", "data", Map.of("x", 100, "y", 200)));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("CURSOR_MOVE");
+        assertThat(session.isConnected()).isTrue();
     }
 
     // =========================================================================
