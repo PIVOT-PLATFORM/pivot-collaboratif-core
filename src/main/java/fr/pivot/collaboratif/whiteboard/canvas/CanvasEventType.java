@@ -16,8 +16,8 @@ package fr.pivot.collaboratif.whiteboard.canvas;
  *   <li>{@link #CARD_CREATE}, {@link #CARD_MOVE}, {@link #CARD_RESIZE}, {@link #CARD_UPDATE},
  *       {@link #CARD_RECOLOR}, {@link #CARD_DELETE}, {@link #CARD_LAYER} — mutate the durable
  *       {@link Card} table (EN08.4).</li>
- *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO} — ephemeral,
- *       broadcast only, never persisted.</li>
+ *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO}, {@link #RESET} —
+ *       ephemeral, broadcast only, never persisted.</li>
  * </ul>
  */
 public enum CanvasEventType {
@@ -33,6 +33,9 @@ public enum CanvasEventType {
     CURSOR_MOVE,
     /** Undo request; broadcast for visual sync, stack logic delegated to US08.3.3. */
     UNDO,
+    /** Board canvas reset (US08.2.4): broadcast only, never persisted — the triggering
+     * {@code POST .../reset} call already deleted the underlying DRAW events server-side. */
+    RESET,
     /** Creates a new {@link Card} (EN08.4). */
     CARD_CREATE,
     /** Moves an existing {@link Card}; refused if locked (EN08.4). */

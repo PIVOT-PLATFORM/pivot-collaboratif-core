@@ -1,6 +1,9 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.UUID;
@@ -32,4 +35,18 @@ public interface CanvasEventRepository extends JpaRepository<CanvasEvent, UUID> 
      * @return ordered list of canvas events; empty if none exist
      */
     List<CanvasEvent> findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(UUID boardId, Long tenantId);
+
+    /**
+     * Deletes every persisted canvas event for the given board (US08.2.4 reset).
+     *
+     * <p>Scoped by {@code tenantId} as well as {@code boardId} as defense-in-depth against
+     * any future caller mistake, even though the board itself has already been resolved
+     * tenant-scoped by the time this is invoked.
+     *
+     * @param boardId  the board UUID
+     * @param tenantId the tenant's {@code public.tenants.id}
+     */
+    @Modifying
+    @Query("DELETE FROM CanvasEvent e WHERE e.boardId = :boardId AND e.tenantId = :tenantId")
+    void deleteAllByBoardIdAndTenantId(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
 }

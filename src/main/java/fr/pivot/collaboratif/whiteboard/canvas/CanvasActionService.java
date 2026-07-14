@@ -166,6 +166,12 @@ public class CanvasActionService {
             case CARD_RECOLOR -> handleCardRecolor(boardId, message, principal);
             case CARD_DELETE -> handleCardDelete(boardId, message, principal);
             case CARD_LAYER -> handleCardLayer(boardId, message, principal);
+            // RESET is server-emitted only (US08.2.4, via the REST reset endpoint) — a client
+            // must never be able to trigger a canvas reset over STOMP, so an inbound RESET
+            // frame is silently dropped here (same policy as an unknown type).
+            case RESET -> LOG.warn(
+                    "Inbound RESET dropped — RESET is server-emitted only, board={} user={}",
+                    boardId, principal.userId());
         }
     }
 
