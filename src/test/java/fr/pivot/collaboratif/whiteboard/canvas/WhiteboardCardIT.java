@@ -35,7 +35,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -316,16 +318,15 @@ class WhiteboardCardIT {
         // board:state is a room broadcast (not a per-user queue reply) — the frontend's
         // StompBoardTransport only subscribes to /topic/whiteboard/{boardId} and has no
         // per-user queue subscription, so a targeted convertAndSendToUser reply would never
-        // reach it (recette finding on #68).
+        // reach it (recette finding on #68). JOIN itself broadcasts first (unchanged, existing
+        // behaviour) — filter past it rather than taking whichever frame arrives first.
         StompSession session = connectAs(token);
-        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
-        session.subscribe("/topic/whiteboard/" + board.getId(),
-                framHandler(BroadcastCanvasMessage.class, future));
+        BlockingQueue<BroadcastCanvasMessage> queue = subscribeQueue(session, board.getId());
 
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "board:join", "data", board.getId().toString()));
 
-        BroadcastCanvasMessage msg = future.get(8, TimeUnit.SECONDS);
+        BroadcastCanvasMessage msg = awaitType(queue, "board:state", 8);
         assertThat(msg.type()).isEqualTo("board:state");
         assertThat(msg.data()).containsKeys("cards", "connections", "frames", "fields");
         @SuppressWarnings("unchecked")
@@ -349,22 +350,20 @@ class WhiteboardCardIT {
         Board board = createBoardWithOwner(tenantId, ownerId);
 
         StompSession session = connectAs(token);
-        CompletableFuture<BroadcastCanvasMessage> createFuture = new CompletableFuture<>();
-        session.subscribe("/topic/whiteboard/" + board.getId(),
-                framHandler(BroadcastCanvasMessage.class, createFuture));
+        BlockingQueue<BroadcastCanvasMessage> queue = subscribeQueue(session, board.getId());
 
         // board.store.ts#init: this.transport.emit('board:join', boardId) — data is a bare
         // string, not an object (the exact shape that previously threw
-        // MessageConversionException before this fix).
+        // MessageConversionException before this fix). JOIN and board:state both broadcast
+        // first (existing behaviour, unrelated to this assertion) — filter past them.
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "board:join", "data", board.getId().toString()));
-        Thread.sleep(200);
 
         // board.store.ts createCard: this.transport.emit('card:create', { content, posX, posY })
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "card:create", "data", Map.of("content", "post-it via real wire name")));
 
-        BroadcastCanvasMessage msg = createFuture.get(5, TimeUnit.SECONDS);
+        BroadcastCanvasMessage msg = awaitType(queue, "card:created", 5);
         assertThat(msg.type()).isEqualTo("card:created");
         @SuppressWarnings("unchecked")
         Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
@@ -472,6 +471,51 @@ class WhiteboardCardIT {
         return PlatformAuthTestSupport.issueToken(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
                 userId, "active", Instant.now().plusSeconds(3600));
+    }
+
+    /**
+     * Subscribes to the board's main topic, queuing every broadcast received — for tests that
+     * expect more than one broadcast in flight (e.g. JOIN's own echo before {@code board:state})
+     * and need to pick out a specific type rather than whichever frame arrives first.
+     */
+    private BlockingQueue<BroadcastCanvasMessage> subscribeQueue(final StompSession session, final UUID boardId) {
+        BlockingQueue<BroadcastCanvasMessage> queue = new LinkedBlockingQueue<>();
+        session.subscribe("/topic/whiteboard/" + boardId, new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(final StompHeaders headers) {
+                return BroadcastCanvasMessage.class;
+            }
+
+            @Override
+            public void handleFrame(final StompHeaders headers, final Object payload) {
+                queue.add((BroadcastCanvasMessage) payload);
+            }
+        });
+        return queue;
+    }
+
+    /**
+     * Drains {@code queue} until a message of the given {@code type} appears, or fails the test
+     * once {@code timeoutSeconds} has elapsed with none found — messages of other types are
+     * silently discarded (they are asserted, or not, by other parts of the same test).
+     */
+    private BroadcastCanvasMessage awaitType(
+            final BlockingQueue<BroadcastCanvasMessage> queue, final String type, final long timeoutSeconds)
+            throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        while (true) {
+            long remainingNanos = deadlineNanos - System.nanoTime();
+            if (remainingNanos <= 0) {
+                throw new AssertionError("Timed out waiting for broadcast type '" + type + "'");
+            }
+            BroadcastCanvasMessage msg = queue.poll(remainingNanos, TimeUnit.NANOSECONDS);
+            if (msg == null) {
+                throw new AssertionError("Timed out waiting for broadcast type '" + type + "'");
+            }
+            if (msg.type().equals(type)) {
+                return msg;
+            }
+        }
     }
 
     private <T> StompFrameHandler framHandler(final Class<T> type, final CompletableFuture<T> future) {
