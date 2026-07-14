@@ -119,8 +119,9 @@ public class CanvasActionService {
      *                                       card is created or updated (US08.6.5); see {@link
      *                                       CardContentEnrichmentRequestedEvent}
      * @param shapeStyleSanitizer            sanitises {@link CardType#SHAPE} style content
-     *                                       ({@code variant}/{@code fill}/{@code stroke}) before
-     *                                       persistence (US08.6.3, correctif §6.4)
+     *                                       ({@code kind}/{@code stroke}/{@code fill}/
+     *                                       {@code opacity}/{@code rotation}, pipe-delimited)
+     *                                       before persistence (US08.6.3, correctif §6.4)
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -350,8 +351,8 @@ public class CanvasActionService {
      * present, is echoed back in the broadcast but never persisted (lets the sending client
      * reconcile its own optimistic local object with the server-assigned id). For
      * {@link CardType#SHAPE} exactly (never for a mistyped value that fell back to
-     * {@link CardType#TEXT}), the incoming {@code content} — the style JSON
-     * ({@code variant}/{@code fill}/{@code stroke}) — is sanitised by
+     * {@link CardType#TEXT}), the incoming {@code content} — the pipe-delimited style string
+     * ({@code kind|stroke|fill|opacity|rotation}) — is sanitised by
      * {@link ShapeStyleSanitizer} before persistence (US08.6.3, correctif §6.4).
      */
     private void handleCardCreate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {

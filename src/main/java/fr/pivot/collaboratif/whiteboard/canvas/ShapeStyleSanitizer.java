@@ -1,113 +1,153 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.ObjectNode;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * Sanitises the opaque {@code content} JSON of a {@link CardType#SHAPE} {@link Card} —
- * {@code {variant, fill, stroke}} — against a closed, applicative set of accepted values
- * before persistence (US08.6.3, correctif §6.4).
+ * Sanitises the opaque {@code content} of a {@link CardType#SHAPE} {@link Card} against a
+ * closed, applicative set of accepted values before persistence (US08.6.3, correctif §6.4).
+ *
+ * <p><strong>Wire format.</strong> A SHAPE card's {@code content} is the pipe-delimited string
+ * {@code '{kind}|{stroke}|{fill}|{opacity}|{rotation}'} — <strong>not</strong> JSON. This is
+ * the exact encoding already shipped and load-bearing on the frontend
+ * (`pivot-collaboratif-ui`'s {@code model/shape.ts}, ported byte-compatible from the PouetPouet
+ * reference's {@code board-card-shape.tsx}); this sanitiser conforms to that existing contract
+ * rather than inventing a JSON schema the frontend would not understand. {@code kind} ∈
+ * {@code {rect, circle, diamond, triangle, line, star}}; {@code fill} is either a hex colour or
+ * the literal {@code "none"}.
  *
  * <p>The reference whiteboard (PouetPouet) leaves the equivalent connector style attributes
  * ({@code shape}/{@code arrow}) as free, unconstrained strings in its database (parity spec
- * §6.4) — an injection surface into the SVG/canvas renderer. PIVOT deliberately does not
- * reproduce this defect for {@code SHAPE} cards: {@code variant} is constrained to a known,
- * finite set (mirroring {@link CanvasElementValidator}'s {@code SHAPE_KINDS} whitelist used
- * for template seed content) and {@code fill}/{@code stroke}, if present, must be valid hex
- * colours or they are silently dropped. Any other top-level field is dropped.
+ * §6.4) — an injection surface into the SVG renderer (a crafted {@code fill}/{@code stroke}
+ * could carry a {@code url(javascript:...)}-style value). PIVOT deliberately does not reproduce
+ * this defect for {@code SHAPE} cards: {@code kind} is constrained to the finite set above and
+ * {@code stroke}/{@code fill}, if not a valid hex colour, fall back to a safe default rather
+ * than being persisted as-is.
  *
  * <p>This is a best-effort <em>sanitisation</em>, not a hard rejection — consistent with the
  * rest of {@link CanvasActionService}'s tolerant handling of malformed card input (never an
- * exception, never a dropped STOMP session). Malformed/empty input falls back to a default
- * {@code {"variant":"rectangle"}} content, matching the reference whiteboard's implicit
- * default shape.
+ * exception, never a dropped STOMP session). Every field independently falls back to the same
+ * default the frontend's own {@code parseShape} already uses for a missing/malformed field, so
+ * a sanitised value round-trips identically through the frontend's parser.
  */
 @Component
 public class ShapeStyleSanitizer {
 
-    /**
-     * Finite, whitelisted set of shape variants — mirrors {@link CanvasElementValidator}'s
-     * {@code SHAPE_KINDS} used for template seed content, kept in sync for terminology
-     * consistency across the codebase.
-     */
-    static final Set<String> ALLOWED_VARIANTS = Set.of("rectangle", "ellipse", "diamond", "line");
+    /** Finite, whitelisted set of shape kinds — mirrors the frontend's {@code ShapeKind}. */
+    static final Set<String> ALLOWED_KINDS = Set.of("rect", "circle", "diamond", "triangle", "line", "star");
 
-    private static final String DEFAULT_VARIANT = "rectangle";
+    private static final String DEFAULT_KIND = "rect";
+    private static final String DEFAULT_STROKE = "#A5B4FC";
+    private static final String NONE = "none";
+    private static final double DEFAULT_OPACITY = 1;
+    private static final double DEFAULT_ROTATION = 0;
 
-    private static final Pattern HEX_COLOR = Pattern.compile("^#[0-9A-Fa-f]{6}$");
+    private static final Pattern HEX_COLOR = Pattern.compile("^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?$");
 
-    private static final String FIELD_VARIANT = "variant";
-    private static final String FIELD_FILL = "fill";
-    private static final String FIELD_STROKE = "stroke";
-
-    private final ObjectMapper objectMapper;
-
-    /**
-     * Creates the sanitiser.
-     *
-     * @param objectMapper the Jackson 3 mapper used to parse and rebuild the JSON content
-     */
-    public ShapeStyleSanitizer(final ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
+    private static final int PART_KIND = 0;
+    private static final int PART_STROKE = 1;
+    private static final int PART_FILL = 2;
+    private static final int PART_OPACITY = 3;
+    private static final int PART_ROTATION = 4;
+    private static final int PART_COUNT = 5;
 
     /**
      * Sanitises a raw {@code content} string intended for a {@link CardType#SHAPE} card.
      *
-     * @param rawContent the raw content string — possibly blank, malformed JSON, carrying an
-     *                    out-of-whitelist {@code variant}, invalid colours, or unrelated fields
-     * @return a JSON string containing only the whitelisted, valid {@code variant}/
-     *         {@code fill}/{@code stroke} fields — never {@code null}, never throws
+     * @param rawContent the raw pipe-delimited content string — possibly blank, truncated,
+     *                   carrying an out-of-whitelist {@code kind}, invalid colours, or
+     *                   non-numeric {@code opacity}/{@code rotation}
+     * @return a {@code '{kind}|{stroke}|{fill}|{opacity}|{rotation}'} string with every field
+     *         validated (or replaced by its safe default) — never {@code null}, never throws
      */
     public String sanitize(final String rawContent) {
-        JsonNode node = parseOrEmpty(rawContent);
-        ObjectNode result = objectMapper.createObjectNode();
+        String[] parts = splitFixed(rawContent == null ? "" : rawContent);
 
-        String variant = node.path(FIELD_VARIANT).asString(null);
-        result.put(FIELD_VARIANT, ALLOWED_VARIANTS.contains(variant) ? variant : DEFAULT_VARIANT);
+        String kind = ALLOWED_KINDS.contains(parts[PART_KIND]) ? parts[PART_KIND] : DEFAULT_KIND;
+        String stroke = isHexColor(parts[PART_STROKE]) ? parts[PART_STROKE] : DEFAULT_STROKE;
+        String fill = NONE.equals(parts[PART_FILL]) || isHexColor(parts[PART_FILL]) ? parts[PART_FILL] : NONE;
+        double opacity = clamp(parseDoubleOrDefault(parts[PART_OPACITY], DEFAULT_OPACITY), 0, 1);
+        double rotation = parseDoubleOrDefault(parts[PART_ROTATION], DEFAULT_ROTATION);
 
-        putIfValidColor(node, result, FIELD_FILL);
-        putIfValidColor(node, result, FIELD_STROKE);
-
-        return objectMapper.writeValueAsString(result);
+        return kind + "|" + stroke + "|" + fill + "|" + formatNumber(opacity) + "|" + formatNumber(rotation);
     }
 
     /**
-     * Copies {@code field} from {@code source} to {@code target} only if present and a
-     * valid hex colour string; otherwise the field is silently dropped.
-     *
-     * @param source the parsed input node
-     * @param target the sanitised output node being built
-     * @param field  the field name ({@code fill} or {@code stroke})
-     */
-    private void putIfValidColor(final JsonNode source, final ObjectNode target, final String field) {
-        JsonNode value = source.get(field);
-        if (value != null && value.isString() && HEX_COLOR.matcher(value.asString()).matches()) {
-            target.put(field, value.asString());
-        }
-    }
-
-    /**
-     * Parses {@code rawContent} into a {@link JsonNode}, falling back to an empty object node
-     * for blank input, invalid JSON, or a non-object JSON value (array, scalar) — never throws.
+     * Splits the raw content on {@code |} into exactly {@value #PART_COUNT} parts, padding
+     * with empty strings for any missing trailing field — every field is then independently
+     * validated/defaulted by {@link #sanitize}, so a truncated or over-long input never throws
+     * an {@link ArrayIndexOutOfBoundsException}.
      *
      * @param rawContent the raw content string
-     * @return the parsed node, or an empty object node as a safe fallback
+     * @return exactly {@value #PART_COUNT} parts
      */
-    private JsonNode parseOrEmpty(final String rawContent) {
-        if (rawContent == null || rawContent.isBlank()) {
-            return objectMapper.createObjectNode();
+    private String[] splitFixed(final String rawContent) {
+        String[] split = rawContent.split("\\|", -1);
+        String[] fixed = new String[PART_COUNT];
+        for (int i = 0; i < PART_COUNT; i++) {
+            fixed[i] = i < split.length ? split[i] : "";
+        }
+        return fixed;
+    }
+
+    /**
+     * Validates a hex colour string (3 or 6 hex digits after {@code #}), matching the
+     * frontend's {@code isHexColor} (`model/colors.ts`).
+     *
+     * @param value the candidate colour string
+     * @return {@code true} if it matches the hex colour pattern
+     */
+    private boolean isHexColor(final String value) {
+        return HEX_COLOR.matcher(value).matches();
+    }
+
+    /**
+     * Parses a numeric field, falling back to {@code defaultValue} for a blank, non-numeric,
+     * or non-finite (NaN/Infinity) value.
+     *
+     * @param value        the raw field string
+     * @param defaultValue the fallback value
+     * @return the parsed value, or {@code defaultValue}
+     */
+    private double parseDoubleOrDefault(final String value, final double defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
         }
         try {
-            JsonNode node = objectMapper.readTree(rawContent);
-            return node.isObject() ? node : objectMapper.createObjectNode();
-        } catch (RuntimeException e) {
-            return objectMapper.createObjectNode();
+            double parsed = Double.parseDouble(value);
+            return Double.isFinite(parsed) ? parsed : defaultValue;
+        } catch (NumberFormatException e) {
+            return defaultValue;
         }
+    }
+
+    /**
+     * Clamps a value to the inclusive {@code [min, max]} range.
+     *
+     * @param value the value to clamp
+     * @param min   the inclusive minimum
+     * @param max   the inclusive maximum
+     * @return the clamped value
+     */
+    private double clamp(final double value, final double min, final double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    /**
+     * Formats a numeric field the way JavaScript's default {@code Number#toString} would
+     * (e.g. {@code 1} rather than {@code 1.0}) so a sanitised value byte-matches what the
+     * frontend's own {@code serializeShape} would have produced for the same logical value.
+     *
+     * @param value the numeric value to format
+     * @return the formatted string
+     */
+    private String formatNumber(final double value) {
+        if (value == Math.rint(value) && !Double.isInfinite(value)) {
+            return String.format(Locale.ROOT, "%d", (long) value);
+        }
+        return String.valueOf(value);
     }
 }
