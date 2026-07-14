@@ -4,6 +4,7 @@ import fr.pivot.collaboratif.exception.InvalidTemplateIdException;
 import fr.pivot.collaboratif.exception.TemplateNotFoundException;
 import fr.pivot.collaboratif.exception.WhiteboardModuleDisabledException;
 import fr.pivot.collaboratif.whiteboard.board.WhiteboardModuleCheck;
+import fr.pivot.collaboratif.whiteboard.canvas.CanvasElementType;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasElementValidator;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEvent;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
@@ -138,5 +139,57 @@ public class WhiteboardTemplateService {
                     base.plusNanos((long) i * ELEMENT_TIMESTAMP_SPACING_NANOS)));
         }
         canvasEventRepository.saveAll(events);
+    }
+
+    /**
+     * Snapshots a board's current persisted canvas content into a new tenant-private
+     * template (US08.2.4 "save as template").
+     *
+     * <p>Each persisted {@code DRAW} {@link CanvasEvent} on the board becomes one
+     * {@link WhiteboardTemplateElement}, preserving chronological order via
+     * {@code displayOrder}. The element payload is copied verbatim from the canvas event: a
+     * {@code { type, tool, payload }} envelope (see {@code CanvasEvent#payload}) that does
+     * <strong>not</strong> conform to {@link CanvasElementValidator}'s flat shape/text/image
+     * schema — that whitelist governs only the 3 seeded global templates and is not applied
+     * here. {@link CanvasElementType#SHAPE} is stored as a structural placeholder, not a
+     * validated classification of the content. There is currently no endpoint that resolves a
+     * tenant-private template (non-null {@code tenant_id}) back through
+     * {@link #initializeBoard}, which only accepts templates resolved via
+     * {@link #resolveGlobalTemplate} ({@code tenant_id IS NULL}) — so this snapshot is not
+     * replayable yet. Wiring a "create board from my saved template" endpoint must first
+     * reconcile this payload shape with {@link CanvasElementValidator}, or bypass it
+     * deliberately for this write path. A board with no canvas content yields a valid, empty
+     * template.
+     *
+     * @param boardId     the source board UUID (already resolved tenant-scoped and
+     *                    OWNER-authorized by the caller)
+     * @param tenantId    the owning tenant's {@code public.tenants.id} — the new template is
+     *                    private to this tenant (non-null {@code tenant_id})
+     * @param name        the template name (validated at the controller layer)
+     * @param description the optional template description
+     * @return the newly persisted template header
+     */
+    @Transactional
+    public WhiteboardTemplate createFromBoard(
+            final UUID boardId,
+            final Long tenantId,
+            final String name,
+            final String description) {
+        WhiteboardTemplate template = templateRepository.save(
+                new WhiteboardTemplate(UUID.randomUUID(), tenantId, name, description, null));
+        List<CanvasEvent> canvasEvents =
+                canvasEventRepository.findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(boardId, tenantId);
+        List<WhiteboardTemplateElement> elements = new ArrayList<>(canvasEvents.size());
+        for (int i = 0; i < canvasEvents.size(); i++) {
+            CanvasEvent event = canvasEvents.get(i);
+            elements.add(new WhiteboardTemplateElement(
+                    UUID.randomUUID(),
+                    template.getId(),
+                    CanvasElementType.SHAPE,
+                    event.getPayload() != null ? event.getPayload() : "{}",
+                    i));
+        }
+        templateElementRepository.saveAll(elements);
+        return template;
     }
 }

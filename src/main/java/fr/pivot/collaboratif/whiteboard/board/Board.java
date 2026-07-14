@@ -10,8 +10,12 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -54,6 +58,31 @@ public class Board {
     /** Timestamp of the last update; refreshed automatically before every update. */
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    /**
+     * Timestamp when the board was soft-deleted (moved to the trash), or {@code null}
+     * when the board is not in the trash (US08.1.7).
+     */
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
+
+    /** Optional free-text description of the board, up to 500 characters (US08.2.4). */
+    @Column(name = "description")
+    private String description;
+
+    /** Optional URL of a cover image for the board (US08.2.4). */
+    @Column(name = "cover_image")
+    private String coverImage;
+
+    /** Optional maximum number of simultaneous participants, or {@code null} for unlimited
+     * (US08.2.4). */
+    @Column(name = "max_participants")
+    private Integer maxParticipants;
+
+    /** Whitelisted activity codes enabled on this board; empty by default (US08.2.4). */
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    @Column(name = "enabled_activities", columnDefinition = "text[]", nullable = false)
+    private List<String> enabledActivities = new ArrayList<>();
 
     /** No-arg constructor required by JPA. */
     protected Board() {
@@ -182,5 +211,107 @@ public class Board {
      */
     public void setUpdatedAt(final Instant updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    /**
+     * Returns the timestamp when the board was soft-deleted, or {@code null} if it is not
+     * in the trash.
+     *
+     * @return the deletedAt instant, or {@code null}
+     */
+    public Instant getDeletedAt() {
+        return deletedAt;
+    }
+
+    /**
+     * Sets the soft-delete timestamp. Passing {@code null} restores the board out of the
+     * trash (US08.1.7).
+     *
+     * @param deletedAt the instant to set, or {@code null} to restore
+     */
+    public void setDeletedAt(final Instant deletedAt) {
+        this.deletedAt = deletedAt;
+    }
+
+    /**
+     * Returns whether the board is currently in the trash.
+     *
+     * @return {@code true} if {@code deletedAt} is set
+     */
+    public boolean isDeleted() {
+        return deletedAt != null;
+    }
+
+    /**
+     * Returns the board's optional description.
+     *
+     * @return the description, or {@code null}
+     */
+    public String getDescription() {
+        return description;
+    }
+
+    /**
+     * Sets the board's description.
+     *
+     * @param description the description to set, or {@code null} to clear it
+     */
+    public void setDescription(final String description) {
+        this.description = description;
+    }
+
+    /**
+     * Returns the board's optional cover image URL.
+     *
+     * @return the cover image URL, or {@code null}
+     */
+    public String getCoverImage() {
+        return coverImage;
+    }
+
+    /**
+     * Sets the board's cover image URL.
+     *
+     * @param coverImage the cover image URL to set, or {@code null} to clear it
+     */
+    public void setCoverImage(final String coverImage) {
+        this.coverImage = coverImage;
+    }
+
+    /**
+     * Returns the maximum number of simultaneous participants, or {@code null} if unlimited.
+     *
+     * @return the max participants, or {@code null}
+     */
+    public Integer getMaxParticipants() {
+        return maxParticipants;
+    }
+
+    /**
+     * Sets the maximum number of simultaneous participants.
+     *
+     * @param maxParticipants the max participants to set, or {@code null} for unlimited
+     */
+    public void setMaxParticipants(final Integer maxParticipants) {
+        this.maxParticipants = maxParticipants;
+    }
+
+    /**
+     * Returns the whitelisted activity codes enabled on this board.
+     *
+     * @return the enabled activities (never {@code null}, possibly empty)
+     */
+    public List<String> getEnabledActivities() {
+        return enabledActivities;
+    }
+
+    /**
+     * Sets the whitelisted activity codes enabled on this board.
+     *
+     * @param enabledActivities the enabled activities to set; {@code null} is normalized to
+     *                          an empty list
+     */
+    public void setEnabledActivities(final List<String> enabledActivities) {
+        this.enabledActivities = enabledActivities != null ? enabledActivities : new ArrayList<>();
     }
 }

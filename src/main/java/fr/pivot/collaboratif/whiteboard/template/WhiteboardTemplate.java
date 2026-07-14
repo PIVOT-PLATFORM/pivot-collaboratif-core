@@ -11,16 +11,16 @@ import java.util.UUID;
 /**
  * JPA entity representing a whiteboard template header (US08.4.1).
  *
- * <p>Rows are exclusively seeded via Flyway ({@code V1__schema_init.sql}) — there is no
- * user-facing endpoint to create, update, or delete a template in the Socle (see the US
- * "Hors périmètre" section). The entity is therefore read-only from the application's
- * point of view: no setters, and no {@code @GeneratedValue} since ids are fixed constants
- * in the seed data.
+ * <p>Global (public, {@code tenant_id IS NULL}) rows are exclusively seeded via Flyway
+ * ({@code V1__schema_init.sql}) — there is no user-facing endpoint to create, update, or
+ * delete a <em>global</em> template in the Socle (see the US "Hors périmètre" section).
  *
- * <p>{@code tenantId} is {@code null} for every row produced in the Socle (global public
- * templates only, see the Gate 1 resolution in the backlog US); it stays nullable so a
- * future tenant-scoped template feature (US30.4.2, phase-3) does not require a breaking
- * migration.
+ * <p>{@code tenantId} was originally {@code null} for every row produced in the Socle
+ * (global public templates only); US08.2.4 ("Enregistrer comme template") introduces the
+ * first application-created rows, with a non-null {@code tenantId} — a private, per-tenant
+ * template distinct from the 3 seeded global ones. The {@link #WhiteboardTemplate(UUID, Long,
+ * String, String, String)} constructor exists for that write path; the no-arg constructor
+ * remains for JPA hydration of both seeded and application-created rows alike.
  */
 @Entity
 @Table(name = "whiteboard_template", schema = "collaboratif")
@@ -62,6 +62,35 @@ public class WhiteboardTemplate {
 
     /** No-arg constructor required by JPA. */
     protected WhiteboardTemplate() {
+    }
+
+    /**
+     * Creates a new tenant-owned (private) template — used by the "save as template"
+     * flow (US08.2.4). {@code code} is derived from {@code id} to satisfy the column's
+     * {@code UNIQUE NOT NULL} constraint without colliding with any seeded global template's
+     * fixed code.
+     *
+     * @param id          server-generated UUID
+     * @param tenantId    owning tenant's {@code public.tenants.id} (never {@code null} for
+     *                    application-created templates)
+     * @param name        display name (1–100 chars, validated at the controller layer)
+     * @param description optional short description (up to 500 chars), or {@code null}
+     * @param thumbnailUrl gallery preview image URL, or {@code null}
+     */
+    public WhiteboardTemplate(
+            final UUID id,
+            final Long tenantId,
+            final String name,
+            final String description,
+            final String thumbnailUrl) {
+        this.id = id;
+        this.tenantId = tenantId;
+        this.code = "CUSTOM_" + id;
+        this.name = name;
+        this.description = description;
+        this.thumbnailUrl = thumbnailUrl;
+        this.displayOrder = 0;
+        this.createdAt = OffsetDateTime.now();
     }
 
     /**
