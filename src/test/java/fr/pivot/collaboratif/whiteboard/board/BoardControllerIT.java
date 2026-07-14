@@ -133,7 +133,7 @@ class BoardControllerIT {
     /**
      * Given valid headers and a non-blank title,
      * when POST /whiteboard/boards is called,
-     * then it returns HTTP 201 with id, title, role "owner", and tenantId.
+     * then it returns HTTP 201 with id, title, role "OWNER", and tenantId.
      */
     @Test
     void createBoard_returnsCreatedWithOwnerRole() throws Exception {
@@ -143,7 +143,7 @@ class BoardControllerIT {
                         .content("{\"title\": \"Sprint Planning\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.title").value("Sprint Planning"))
-                .andExpect(jsonPath("$.role").value("owner"))
+                .andExpect(jsonPath("$.role").value("OWNER"))
                 .andExpect(jsonPath("$.id").isString())
                 .andExpect(jsonPath("$.tenantId").value(tenantA));
     }

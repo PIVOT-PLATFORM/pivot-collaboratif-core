@@ -1,3 +1,25 @@
+## [0.2.1](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.2.0...v0.2.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **api:** BoardResponse.role en majuscules, aligné sur MemberResponse/WS JOIN ([#70](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/70)) ([904657f](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/904657ff14ec214f715b1f36df8f6b9983414809))
+
+# [0.2.0](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.1.2...v0.2.0) (2026-07-14)
+
+
+### Bug Fixes
+
+* **ci:** stop pushing mutable 'latest' Docker tag (forbidden by .plumber.yaml) ([#56](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/56)) ([b5b447b](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/b5b447b624ef3771a9d6f15f1270d784aeea19dd))
+* **docker:** add HEALTHCHECK, curl, and separate actuator port ([#57](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/57)) ([9b2c042](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/9b2c0423ca0e81b36318f8d569e1031b71939a5d))
+
+
+### Features
+
+* **ci:** implement production deployment for real ([#60](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/60)) ([d9f793b](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/d9f793b724b86e3463a7cc7cd85d914f627b1566))
+* **config:** wire production secrets via configtree (EN07.2 pattern) ([#61](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/61)) ([4bbb304](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/4bbb30420b43d9a77ead77af4a30822911aac9d3)), closes [#3](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/3)
+* **whiteboard:** parité visible — favoris, corbeille, recherche, paramètres+reset (US08.1.6/7/8, US08.2.4) ([#66](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/66)) ([885d04f](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/885d04ffd8fb5e9251742cc5a7ee0380f93f56a6)), closes [#65](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/65)
+
 ## [0.1.2](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.1.1...v0.1.2) (2026-07-09)
 
 
