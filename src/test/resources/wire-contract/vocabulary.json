@@ -1,0 +1,18 @@
+[
+  { "name": "JOIN", "wireIn": "board:join", "wireOut": "JOIN" },
+  { "name": "LEAVE", "wireIn": "board:leave", "wireOut": "LEAVE" },
+  { "name": "DRAW", "wireIn": "DRAW", "wireOut": "DRAW" },
+  { "name": "CURSOR_MOVE", "wireIn": "board:cursor", "wireOut": "CURSOR_MOVE" },
+  { "name": "UNDO", "wireIn": "UNDO", "wireOut": "UNDO" },
+  { "name": "RESET", "wireIn": "RESET", "wireOut": "RESET" },
+  { "name": "CARD_CREATE", "wireIn": "card:create", "wireOut": "card:created" },
+  { "name": "CARD_MOVE", "wireIn": "card:move", "wireOut": "card:moved" },
+  { "name": "CARD_RESIZE", "wireIn": "card:resize", "wireOut": "card:resized" },
+  { "name": "CARD_UPDATE", "wireIn": "card:update", "wireOut": "card:updated" },
+  { "name": "CARD_RECOLOR", "wireIn": "card:recolor", "wireOut": "card:recolored" },
+  { "name": "CARD_DELETE", "wireIn": "card:delete", "wireOut": "card:deleted" },
+  { "name": "CARD_LAYER", "wireIn": "card:layer", "wireOut": "card:layered" },
+  { "name": "CONNECTION_CREATE", "wireIn": "connection:create", "wireOut": "connection:created" },
+  { "name": "CONNECTION_DELETE", "wireIn": "connection:delete", "wireOut": "connection:deleted" },
+  { "name": "CONNECTION_UPDATE", "wireIn": "connection:update", "wireOut": "connection:updated" }
+]
