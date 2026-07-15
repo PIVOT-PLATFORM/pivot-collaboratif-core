@@ -33,6 +33,8 @@ import java.util.stream.Stream;
  *   <li>{@link #CARD_CREATE}, {@link #CARD_MOVE}, {@link #CARD_RESIZE}, {@link #CARD_UPDATE},
  *       {@link #CARD_RECOLOR}, {@link #CARD_DELETE}, {@link #CARD_LAYER} — mutate the durable
  *       {@link Card} table (EN08.4).</li>
+ *   <li>{@link #CONNECTION_CREATE}, {@link #CONNECTION_DELETE} — mutate the durable
+ *       {@link CardConnection} table (US08.7.1).</li>
  *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO}, {@link #RESET} —
  *       ephemeral, broadcast only, never persisted.</li>
  * </ul>
@@ -69,7 +71,11 @@ public enum CanvasEventType {
      * before the delete itself (EN08.4, guard added by fix/EN08.4). */
     CARD_DELETE("card:delete", "card:deleted"),
     /** Changes an existing {@link Card}'s Z-order layer; not blocked by {@code locked} (EN08.4). */
-    CARD_LAYER("card:layer", "card:layered");
+    CARD_LAYER("card:layer", "card:layered"),
+    /** Creates a new {@link CardConnection} linking two {@link Card}s (US08.7.1). */
+    CONNECTION_CREATE("connection:create", "connection:created"),
+    /** Deletes an existing {@link CardConnection}; tolerant of an already-cascaded id (US08.7.1). */
+    CONNECTION_DELETE("connection:delete", "connection:deleted");
 
     private static final Map<String, CanvasEventType> BY_WIRE_IN = Stream.of(values())
             .collect(Collectors.toMap(t -> t.wireIn.toLowerCase(Locale.ROOT), t -> t));

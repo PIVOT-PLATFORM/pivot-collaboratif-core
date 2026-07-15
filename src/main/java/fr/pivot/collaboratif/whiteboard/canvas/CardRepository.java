@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -32,6 +33,19 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
      * @return the board's cards; empty if none exist
      */
     List<Card> findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(UUID boardId, Long tenantId);
+
+    /**
+     * Counts how many of the given card ids exist and belong to the given board — used by
+     * {@link CanvasActionService#handleConnectionCreate} to validate, in a single query, that
+     * both a connector's endpoints are real cards of this board before insert (US08.7.1,
+     * correctif §6.5: unlike the reference whiteboard, which lets Prisma throw an uncaught FK
+     * error on a missing endpoint, this repo validates existence first and refuses silently).
+     *
+     * @param ids     the candidate card ids (typically exactly two: a connector's fromId/toId)
+     * @param boardId the owning board UUID (defence in depth against a cross-board id)
+     * @return the number of {@code ids} that exist and belong to {@code boardId} (0..ids.size())
+     */
+    long countByIdInAndBoardId(Collection<UUID> ids, UUID boardId);
 
     /**
      * Moves a card, guarded by lock state and board ownership in the same query.
