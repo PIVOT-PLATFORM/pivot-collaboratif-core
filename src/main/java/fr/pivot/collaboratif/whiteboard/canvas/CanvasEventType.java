@@ -87,7 +87,8 @@ public enum CanvasEventType {
     FRAME_RESIZE("frame:resize", "frame:resized"),
     /** Updates an existing {@link Frame}'s title/active/color (partial patch); echoes the full flat frame. */
     FRAME_UPDATE("frame:update", "frame:updated"),
-    /** Deletes an existing {@link Frame}; echoes the bare id string (EN08, Frames). */
+    /** Deletes an existing {@link Frame}; echoes {@code {id}} (mirrors this branch's card:deleted;
+     * flips to a bare id string when the #84 wire-envelope PR lands — see handleFrameDelete). */
     FRAME_DELETE("frame:delete", "frame:deleted"),
     /** Changes an existing {@link Frame}'s Z-order layer; echoes {@code {id, layer}} (EN08, Frames). */
     FRAME_LAYER("frame:layer", "frame:layered");

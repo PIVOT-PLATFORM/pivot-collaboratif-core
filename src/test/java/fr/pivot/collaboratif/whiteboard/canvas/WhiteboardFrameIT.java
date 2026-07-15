@@ -41,7 +41,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -137,7 +136,7 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:created");
-        Map<String, Object> frame = map(msg);
+        Map<String, Object> frame = msg.data();
         assertThat(frame.get("id")).isNotNull();
         assertThat(frame.get("boardId")).isEqualTo(board.getId().toString());
         assertThat(frame.get("title")).isEqualTo("");
@@ -184,7 +183,7 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:created");
-        Map<String, Object> frame = map(msg);
+        Map<String, Object> frame = msg.data();
         assertThat(frame.get("title")).isEqualTo("Sprint backlog");
         assertThat(frame.get("color")).isEqualTo("#FF0000");
         assertThat(((Number) frame.get("width")).doubleValue()).isEqualTo(800.0);
@@ -214,7 +213,7 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:moved");
-        Map<String, Object> body = map(msg);
+        Map<String, Object> body = msg.data();
         assertThat(body.get("id")).isEqualTo(frame.getId().toString());
         assertThat(((Number) body.get("posX")).doubleValue()).isEqualTo(111.0);
         assertThat(((Number) body.get("posY")).doubleValue()).isEqualTo(222.0);
@@ -249,7 +248,7 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:resized");
-        Map<String, Object> body = map(msg);
+        Map<String, Object> body = msg.data();
         assertThat(((Number) body.get("width")).doubleValue()).isEqualTo(999.0);
         assertThat(((Number) body.get("height")).doubleValue()).isEqualTo(555.0);
         assertThat(body).containsKeys("id", "boardId", "posX", "posY", "title", "color", "active", "layer");
@@ -282,7 +281,7 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:updated");
-        Map<String, Object> body = map(msg);
+        Map<String, Object> body = msg.data();
         assertThat(body.get("id")).isEqualTo(frame.getId().toString());
         assertThat(body.get("title")).isEqualTo("Iteration 3");
         assertThat(body).containsKeys("boardId", "posX", "posY", "width", "height", "color", "active", "layer");
@@ -314,7 +313,7 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:updated");
-        assertThat(map(msg).get("active")).isEqualTo(true);
+        assertThat(msg.data().get("active")).isEqualTo(true);
 
         Frame reloaded = frameRepository.findById(frame.getId()).orElseThrow();
         assertThat(reloaded.isActive()).isTrue();
@@ -342,8 +341,9 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:deleted");
-        // Bare id string as data, matching this.on<string>('frame:deleted', …) — not an { id } object.
-        assertThat(msg.data()).isEqualTo(frame.getId().toString());
+        // {id} object — mirrors this branch's card:deleted exactly (flips to a bare id string
+        // once the #84 wire-envelope PR lands; see CanvasActionService#handleFrameDelete).
+        assertThat(msg.data().get("id")).isEqualTo(frame.getId().toString());
 
         Thread.sleep(200);
         assertThat(frameRepository.findById(frame.getId())).isEmpty();
@@ -402,7 +402,7 @@ class WhiteboardFrameIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("frame:layered");
-        Map<String, Object> body = map(msg);
+        Map<String, Object> body = msg.data();
         assertThat(body.get("id")).isEqualTo(frame.getId().toString());
         assertThat(((Number) body.get("layer")).intValue()).isEqualTo(7);
 
@@ -430,9 +430,9 @@ class WhiteboardFrameIT {
                 Map.of("type", "board:join", "data", board.getId().toString()));
 
         BroadcastCanvasMessage msg = awaitType(queue, "board:state", 8);
-        assertThat(map(msg)).containsKeys("cards", "connections", "frames", "fields");
+        assertThat(msg.data()).containsKeys("cards", "connections", "frames", "fields");
         @SuppressWarnings("unchecked")
-        List<Object> frames = (List<Object>) map(msg).get("frames");
+        List<Object> frames = (List<Object>) msg.data().get("frames");
         assertThat(frames).hasSize(2);
         @SuppressWarnings("unchecked")
         Map<String, Object> first = (Map<String, Object>) frames.get(0);
