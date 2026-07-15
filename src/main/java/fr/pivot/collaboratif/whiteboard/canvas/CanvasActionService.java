@@ -6,6 +6,7 @@ import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardConnectionDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.FrameDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
 import fr.pivot.collaboratif.whiteboard.canvas.opengraph.CardContentEnrichmentRequestedEvent;
 import fr.pivot.collaboratif.whiteboard.canvas.table.TableCardContentSanitizer;
@@ -106,6 +107,7 @@ public class CanvasActionService {
     private final CanvasEventRepository canvasEventRepository;
     private final CardRepository cardRepository;
     private final CardConnectionRepository cardConnectionRepository;
+    private final FrameRepository frameRepository;
     private final ColorPaletteService colorPaletteService;
     private final ParticipantMetaStore participantMetaStore;
     private final BoardMemberRepository boardMemberRepository;
@@ -126,6 +128,7 @@ public class CanvasActionService {
      * @param cardRepository               JPA repository for durable {@link Card} state (EN08.4)
      * @param cardConnectionRepository     JPA repository for durable {@link CardConnection}
      *                                     state (US08.7.1)
+     * @param frameRepository              JPA repository for durable {@link Frame} state (EN08, Frames)
      * @param colorPaletteService          deterministic colour assignment
      * @param participantMetaStore         Redis store for participant metadata
      * @param boardMemberRepository        JPA repository for role lookups
@@ -157,6 +160,7 @@ public class CanvasActionService {
             final CanvasEventRepository canvasEventRepository,
             final CardRepository cardRepository,
             final CardConnectionRepository cardConnectionRepository,
+            final FrameRepository frameRepository,
             final ColorPaletteService colorPaletteService,
             final ParticipantMetaStore participantMetaStore,
             final BoardMemberRepository boardMemberRepository,
@@ -172,6 +176,7 @@ public class CanvasActionService {
         this.canvasEventRepository = canvasEventRepository;
         this.cardRepository = cardRepository;
         this.cardConnectionRepository = cardConnectionRepository;
+        this.frameRepository = frameRepository;
         this.colorPaletteService = colorPaletteService;
         this.participantMetaStore = participantMetaStore;
         this.boardMemberRepository = boardMemberRepository;
@@ -245,6 +250,12 @@ public class CanvasActionService {
             case CONNECTION_CREATE -> handleConnectionCreate(boardId, message, principal);
             case CONNECTION_DELETE -> handleConnectionDelete(boardId, message, principal);
             case CONNECTION_UPDATE -> handleConnectionUpdate(boardId, message, principal);
+            case FRAME_CREATE -> handleFrameCreate(boardId, message, principal);
+            case FRAME_MOVE -> handleFrameMove(boardId, message, principal);
+            case FRAME_RESIZE -> handleFrameResize(boardId, message, principal);
+            case FRAME_UPDATE -> handleFrameUpdate(boardId, message, principal);
+            case FRAME_DELETE -> handleFrameDelete(boardId, message, principal);
+            case FRAME_LAYER -> handleFrameLayer(boardId, message, principal);
             // RESET is server-emitted only (US08.2.4, via the REST reset endpoint) — a client
             // must never be able to trigger a canvas reset over STOMP, so an inbound RESET
             // frame is silently dropped here (same policy as an unknown type).
@@ -255,18 +266,19 @@ public class CanvasActionService {
     }
 
     /**
-     * Returns whether the given event type mutates a durable board-state table ({@link Card}
-     * or {@link CardConnection}) and therefore requires {@code canWrite} (OWNER or EDITOR) —
-     * every {@code CARD_*} and {@code CONNECTION_*} type (there is no read-only card/connection
-     * action over STOMP, board-state on JOIN being the read path).
+     * Returns whether the given event type mutates a durable board-state table ({@link Card},
+     * {@link CardConnection} or {@link Frame}) and therefore requires {@code canWrite} (OWNER or
+     * EDITOR) — every {@code CARD_*}, {@code CONNECTION_*} and {@code FRAME_*} type (there is no
+     * read-only card/connection/frame action over STOMP, board-state on JOIN being the read path).
      *
      * @param eventType the event type to check
-     * @return {@code true} for any {@code CARD_*}/{@code CONNECTION_*} type
+     * @return {@code true} for any {@code CARD_*}/{@code CONNECTION_*}/{@code FRAME_*} type
      */
     private boolean requiresCanWrite(final CanvasEventType eventType) {
         return switch (eventType) {
             case CARD_CREATE, CARD_MOVE, CARD_RESIZE, CARD_UPDATE, CARD_RECOLOR, CARD_DELETE, CARD_LAYER,
-                    CONNECTION_CREATE, CONNECTION_DELETE, CONNECTION_UPDATE -> true;
+                    CONNECTION_CREATE, CONNECTION_DELETE, CONNECTION_UPDATE,
+                    FRAME_CREATE, FRAME_MOVE, FRAME_RESIZE, FRAME_UPDATE, FRAME_DELETE, FRAME_LAYER -> true;
             default -> false;
         };
     }
@@ -323,10 +335,15 @@ public class CanvasActionService {
                 .stream()
                 .map(this::toDto)
                 .toList();
+        List<FrameDto> frames = frameRepository
+                .findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(boardId, principal.tenantId())
+                .stream()
+                .map(this::toDto)
+                .toList();
         Map<String, Object> stateData = new HashMap<>();
         stateData.put("cards", cards);
         stateData.put("connections", connections);
-        stateData.put("frames", List.of());
+        stateData.put("frames", frames);
         stateData.put("fields", List.of());
         broadcast(boardId, principal, "board:state", stateData);
 
@@ -892,6 +909,223 @@ public class CanvasActionService {
     }
 
     // -------------------------------------------------------------------------
+    // Frame handlers (EN08, Frames)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Handles a FRAME_CREATE action ({@code frame:create} inbound): persists a new {@link Frame}
+     * and broadcasts it as a flat frame object ({@code frame:created}) to the whole room, emitter
+     * included.
+     *
+     * <p>The frontend's basic create sends only {@code {boardId, posX, posY}} and adopts whatever
+     * the server echoes back; an optional {@code title}/{@code color}/{@code width}/{@code height}
+     * (sent by the duplicate-frame path) is applied when present, otherwise the server-authoritative
+     * defaults ({@link Frame}) stand. No {@code clientTag} is round-tripped — unlike cards, the
+     * frontend does not send one for frames.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming FRAME_CREATE action
+     * @param principal the emitting principal
+     */
+    private void handleFrameCreate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        double posX = toDouble(data.get("posX"), 0);
+        double posY = toDouble(data.get("posY"), 0);
+
+        Frame frame = new Frame(boardId, principal.tenantId(), posX, posY, Instant.now());
+        if (data.get("title") instanceof String t) {
+            frame.setTitle(t);
+        }
+        if (data.get("color") instanceof String c) {
+            frame.setColor(c);
+        }
+        if (data.get("width") != null) {
+            frame.setWidth(toDouble(data.get("width"), frame.getWidth()));
+        }
+        if (data.get("height") != null) {
+            frame.setHeight(toDouble(data.get("height"), frame.getHeight()));
+        }
+        if (data.get("layer") != null) {
+            frame.setLayer((int) toDouble(data.get("layer"), frame.getLayer()));
+        }
+        frameRepository.save(frame);
+
+        broadcast(boardId, principal, CanvasEventType.FRAME_CREATE, toFlatMap(toDto(frame)));
+        LOG.debug("Frame created: id={} board={}", frame.getId(), boardId);
+    }
+
+    /**
+     * Handles a FRAME_MOVE action ({@code frame:move} inbound): moves a frame if it exists and
+     * belongs to this board, then broadcasts the full updated flat frame ({@code frame:moved}) —
+     * the frontend spreads it over its local frame ({@code {...f, ...frame}}) and matches by id.
+     * Refused silently (no broadcast) if the id is missing/unparsable or on another board.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming FRAME_MOVE action
+     * @param principal the emitting principal
+     */
+    private void handleFrameMove(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        double posX = toDouble(data.get("posX"), 0);
+        double posY = toDouble(data.get("posY"), 0);
+        if (frameRepository.move(id, boardId, posX, posY) == 0) {
+            LOG.debug("Frame move no-op (missing or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcastFrame(boardId, principal, CanvasEventType.FRAME_MOVE, id);
+    }
+
+    /**
+     * Handles a FRAME_RESIZE action ({@code frame:resize} inbound): resizes a frame (width/height)
+     * if it exists and belongs to this board, optionally moving it too when the payload also carries
+     * {@code posX}/{@code posY}, then broadcasts the full updated flat frame ({@code frame:resized}).
+     * Refused silently if the id is missing/unparsable or on another board.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming FRAME_RESIZE action
+     * @param principal the emitting principal
+     */
+    private void handleFrameResize(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        double width = toDouble(data.get("width"), 400);
+        double height = toDouble(data.get("height"), 300);
+        if (frameRepository.resize(id, boardId, width, height) == 0) {
+            LOG.debug("Frame resize no-op (missing or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        // The frontend's commitResizeFrame path may also carry posX/posY (top-left anchor moves) —
+        // apply them in the same action so the broadcast frame reflects the final geometry.
+        if (data.get("posX") != null && data.get("posY") != null) {
+            frameRepository.move(id, boardId, toDouble(data.get("posX"), 0), toDouble(data.get("posY"), 0));
+        }
+        broadcastFrame(boardId, principal, CanvasEventType.FRAME_RESIZE, id);
+    }
+
+    /**
+     * Handles a FRAME_UPDATE action ({@code frame:update} inbound): applies a partial patch to a
+     * frame's {@code title}/{@code active}/{@code color} — only the keys actually present in the
+     * payload are mutated (the frontend sends {@code title} alone, or {@code active} alone) — then
+     * broadcasts the full updated flat frame ({@code frame:updated}). Refused silently if the id is
+     * missing/unparsable, on another board, or no recognised field was present.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming FRAME_UPDATE action
+     * @param principal the emitting principal
+     */
+    private void handleFrameUpdate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        Optional<Frame> existing = frameRepository.findByIdAndBoardId(id, boardId);
+        if (existing.isEmpty()) {
+            LOG.debug("Frame update no-op (missing or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        Frame frame = existing.get();
+        boolean mutated = false;
+        if (data.get("title") instanceof String t) {
+            frame.setTitle(t);
+            mutated = true;
+        }
+        if (data.get("active") instanceof Boolean b) {
+            frame.setActive(b);
+            mutated = true;
+        }
+        if (data.get("color") instanceof String c) {
+            frame.setColor(c);
+            mutated = true;
+        }
+        if (!mutated) {
+            LOG.debug("Frame update no-op (empty patch): id={} board={}", id, boardId);
+            return;
+        }
+        frameRepository.save(frame);
+        broadcast(boardId, principal, CanvasEventType.FRAME_UPDATE, toFlatMap(toDto(frame)));
+        LOG.debug("Frame updated: id={} board={}", id, boardId);
+    }
+
+    /**
+     * Handles a FRAME_DELETE action ({@code frame:delete} inbound): deletes a frame scoped by
+     * board, then broadcasts the <strong>bare id string</strong> ({@code frame:deleted}) — matching
+     * the frontend's {@code this.on<string>('frame:deleted', id => …)}. Idempotent: deleting an id
+     * that does not exist (already deleted, on another board, or never existed) is a silent no-op,
+     * never an exception.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming FRAME_DELETE action
+     * @param principal the emitting principal
+     */
+    private void handleFrameDelete(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        if (frameRepository.deleteByIdAndBoardId(id, boardId) == 0) {
+            LOG.debug("Frame delete no-op (already deleted or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.FRAME_DELETE, id.toString());
+    }
+
+    /**
+     * Handles a FRAME_LAYER action ({@code frame:layer} inbound): changes a frame's Z-order layer,
+     * then echoes {@code {id, layer}} ({@code frame:layered}) — matching the frontend's
+     * {@code this.on<{ id, layer }>('frame:layered', …)} (a lighter payload than the full frame,
+     * same idiom as {@code card:layered}). Refused silently if the id is missing/unparsable or on
+     * another board.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming FRAME_LAYER action
+     * @param principal the emitting principal
+     */
+    private void handleFrameLayer(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        int layer = (int) toDouble(data.get("layer"), 0);
+        if (frameRepository.updateLayer(id, boardId, layer) == 0) {
+            LOG.debug("Frame layer no-op (missing or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.FRAME_LAYER,
+                Map.of("id", id.toString(), "layer", layer));
+    }
+
+    /**
+     * Re-reads a frame after a mutation and broadcasts its full flattened {@link FrameDto} under
+     * the given event type ({@code frame:moved}/{@code frame:resized}). Skips the broadcast in the
+     * extremely unlikely race where the frame vanished (concurrent delete) between the guarded
+     * update and this read.
+     *
+     * @param boardId   the board UUID
+     * @param principal the emitting principal
+     * @param type      the outgoing event type
+     * @param id        the mutated frame's id
+     */
+    private void broadcastFrame(
+            final UUID boardId, final StompPrincipal principal, final CanvasEventType type, final UUID id) {
+        Frame frame = frameRepository.findByIdAndBoardId(id, boardId).orElse(null);
+        if (frame == null) {
+            LOG.debug("Frame broadcast skipped: frame vanished after mutation, id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, type, toFlatMap(toDto(frame)));
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
@@ -903,13 +1137,14 @@ public class CanvasActionService {
      * @param boardId   the board UUID
      * @param principal the emitting principal
      * @param type      the event type
-     * @param data      the type-specific payload
+     * @param data      the type-specific payload (a JSON object, or a bare string for
+     *                  {@code frame:deleted} — see {@link BroadcastCanvasMessage})
      */
     private void broadcast(
             final UUID boardId,
             final StompPrincipal principal,
             final CanvasEventType type,
-            final Map<String, Object> data) {
+            final Object data) {
         broadcast(boardId, principal, type.wireOut(), data);
     }
 
@@ -918,16 +1153,20 @@ public class CanvasActionService {
      * {@link CanvasEventType} (e.g. {@code board:state}, the JOIN reply) under a raw wire
      * type string.
      *
+     * <p>{@code data} is {@link Object}, not {@code Map}, so a handler can broadcast exactly the
+     * shape its frontend consumer subscribes to — a flat object or a bare string
+     * ({@code frame:deleted}). See {@link BroadcastCanvasMessage}.
+     *
      * @param boardId   the board UUID
      * @param principal the principal that triggered this broadcast
      * @param wireType  the raw outgoing wire type string
-     * @param data      the type-specific payload
+     * @param data      the type-specific payload (object or bare string)
      */
     private void broadcast(
             final UUID boardId,
             final StompPrincipal principal,
             final String wireType,
-            final Map<String, Object> data) {
+            final Object data) {
         String destination = BOARD_TOPIC_PREFIX + boardId;
         BroadcastCanvasMessage msg = new BroadcastCanvasMessage(
                 wireType, boardId.toString(), principal.userId().toString(), data);
@@ -1096,5 +1335,33 @@ public class CanvasActionService {
                 connection.getId(), connection.getFromId(), connection.getToId(),
                 connection.getLabel(), connection.getColor(), connection.getShape(),
                 connection.getArrow(), connection.isDashed(), connection.getWidth());
+    }
+
+    /**
+     * Maps a persisted {@link Frame} to its wire {@link FrameDto} (EN08, Frames).
+     *
+     * @param frame the persisted frame
+     * @return the corresponding {@link FrameDto}
+     */
+    private FrameDto toDto(final Frame frame) {
+        return FrameDto.of(
+                frame.getId(), frame.getBoardId(), frame.getTitle(),
+                frame.getPosX(), frame.getPosY(), frame.getWidth(), frame.getHeight(),
+                frame.getColor(), frame.isActive(), frame.getLayer());
+    }
+
+    /**
+     * Flattens a {@link FrameDto} into a field-named {@link Map}, for the {@code frame:created}/
+     * {@code frame:moved}/{@code frame:resized}/{@code frame:updated} broadcasts that put the
+     * frame's fields directly at the top level of {@code data} — matching the frontend's
+     * {@code this.on<Frame>('frame:created', …)} handlers, which read the fields off {@code data}
+     * directly (EN08, Frames).
+     *
+     * @param dto the frame DTO to flatten
+     * @return a map of the DTO's fields, keyed by field name
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> toFlatMap(final FrameDto dto) {
+        return objectMapper.convertValue(dto, Map.class);
     }
 }
