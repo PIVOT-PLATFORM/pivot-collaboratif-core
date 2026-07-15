@@ -7,6 +7,7 @@ import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
 import fr.pivot.collaboratif.whiteboard.canvas.opengraph.CardContentEnrichmentRequestedEvent;
+import fr.pivot.collaboratif.whiteboard.canvas.table.TableCardContentSanitizer;
 import fr.pivot.collaboratif.whiteboard.ws.ErrorPayload;
 import fr.pivot.collaboratif.whiteboard.ws.StompPrincipal;
 import fr.pivot.collaboratif.whiteboard.ws.WhiteboardPresenceRegistry;
@@ -96,6 +97,7 @@ public class CanvasActionService {
     private final ApplicationEventPublisher eventPublisher;
     private final ShapeStyleSanitizer shapeStyleSanitizer;
     private final ImageCardContentValidator imageCardContentValidator;
+    private final TableCardContentSanitizer tableCardContentSanitizer;
 
     /**
      * Creates the service.
@@ -125,6 +127,9 @@ public class CanvasActionService {
      *                                       before persistence (US08.6.3, correctif §6.4)
      * @param imageCardContentValidator      server-side MIME/size validation for
      *                                       {@link CardType#IMAGE} content (US08.6.4)
+     * @param tableCardContentSanitizer      defence-in-depth sanitizer applied to every
+     *                                       CARD_CREATE/CARD_UPDATE content string — a no-op
+     *                                       for any content that is not TABLE-shaped (US08.6.6)
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -139,7 +144,8 @@ public class CanvasActionService {
             final ParticipantsBroadcastService participantsBroadcastService,
             final ApplicationEventPublisher eventPublisher,
             final ShapeStyleSanitizer shapeStyleSanitizer,
-            final ImageCardContentValidator imageCardContentValidator) {
+            final ImageCardContentValidator imageCardContentValidator,
+            final TableCardContentSanitizer tableCardContentSanitizer) {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
         this.cardRepository = cardRepository;
@@ -153,6 +159,7 @@ public class CanvasActionService {
         this.eventPublisher = eventPublisher;
         this.shapeStyleSanitizer = shapeStyleSanitizer;
         this.imageCardContentValidator = imageCardContentValidator;
+        this.tableCardContentSanitizer = tableCardContentSanitizer;
     }
 
     /**
@@ -367,11 +374,16 @@ public class CanvasActionService {
      * (malformed data URL, oversized, or unrecognised signature) silently drops the whole
      * {@code CARD_CREATE} — no card persisted, no broadcast — consistent with every other
      * {@code card:*} refusal path in this Socle.
+     *
+     * <p>Before any type-specific handling, {@code content} first passes through
+     * {@link TableCardContentSanitizer} — a defence-in-depth pass that is a no-op for any
+     * content that is not TABLE-shaped (US08.6.6), so it never interferes with the
+     * SHAPE/IMAGE-specific sanitisation that follows.
      */
     private void handleCardCreate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
         CardType type = parseCardType(data.get("type"));
-        String content = (String) data.getOrDefault("content", "");
+        String content = tableCardContentSanitizer.sanitize((String) data.getOrDefault("content", ""));
         if (type == CardType.SHAPE) {
             content = shapeStyleSanitizer.sanitize(content);
         }
@@ -510,9 +522,11 @@ public class CanvasActionService {
 
     /**
      * Handles a CARD_UPDATE action: updates a card's content if it exists, belongs to this
-     * board, and is not locked; refused silently otherwise. The card's persisted type is
-     * looked up once before the atomic guarded write, and used to dispatch type-specific
-     * content handling:
+     * board, and is not locked; refused silently otherwise. Before any type-specific handling,
+     * {@code content} first passes through {@link TableCardContentSanitizer} — a
+     * defence-in-depth pass that is a no-op for any content that is not TABLE-shaped
+     * (US08.6.6). The card's persisted type is then looked up once before the atomic guarded
+     * write, and used to dispatch further type-specific content handling:
      * <ul>
      *   <li>{@link CardType#SHAPE}: {@code content} is sanitised by
      *       {@link ShapeStyleSanitizer}, same as at creation (US08.6.3, correctif §6.4).</li>
@@ -539,7 +553,7 @@ public class CanvasActionService {
         if (id == null) {
             return;
         }
-        String content = (String) data.getOrDefault("content", "");
+        String content = tableCardContentSanitizer.sanitize((String) data.getOrDefault("content", ""));
         CardType type = cardRepository.findTypeByIdAndBoardId(id, boardId).orElse(null);
         if (type == CardType.SHAPE) {
             content = shapeStyleSanitizer.sanitize(content);

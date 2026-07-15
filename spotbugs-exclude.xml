@@ -84,6 +84,10 @@
                  template, ObjectMapper, MeterRegistry); DTO records expose mutable Map/List for JSON transport. -->
             <Package name="fr.pivot.collaboratif.whiteboard.canvas"/>
             <Package name="fr.pivot.collaboratif.whiteboard.canvas.dto"/>
+            <!-- US08.6.6 — TABLE card content sanitisation: TableCardContentSanitizer stores a
+                 constructor-injected singleton bean (the shared Jackson 3 ObjectMapper), same
+                 rationale as the parent fr.pivot.collaboratif.whiteboard.canvas package above. -->
+            <Package name="fr.pivot.collaboratif.whiteboard.canvas.table"/>
             <!-- US08.4.1 — Board-from-template: WhiteboardTemplateService/WhiteboardTemplateController
                  store constructor-injected singleton beans (repositories, CanvasElementValidator,
                  WhiteboardModuleCheck); WhiteboardTemplate/WhiteboardTemplateElement are JPA
