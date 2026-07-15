@@ -94,6 +94,7 @@ public class CanvasActionService {
     private final WhiteboardPresenceRegistry presenceRegistry;
     private final ParticipantsBroadcastService participantsBroadcastService;
     private final ApplicationEventPublisher eventPublisher;
+    private final ShapeStyleSanitizer shapeStyleSanitizer;
 
     /**
      * Creates the service.
@@ -117,6 +118,10 @@ public class CanvasActionService {
      *                                       OpenGraph enrichment pass after a LINK/TEXT/LABEL
      *                                       card is created or updated (US08.6.5); see {@link
      *                                       CardContentEnrichmentRequestedEvent}
+     * @param shapeStyleSanitizer            sanitises {@link CardType#SHAPE} style content
+     *                                       ({@code kind}/{@code stroke}/{@code fill}/
+     *                                       {@code opacity}/{@code rotation}, pipe-delimited)
+     *                                       before persistence (US08.6.3, correctif §6.4)
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -129,7 +134,8 @@ public class CanvasActionService {
             final MeterRegistry meterRegistry,
             final WhiteboardPresenceRegistry presenceRegistry,
             final ParticipantsBroadcastService participantsBroadcastService,
-            final ApplicationEventPublisher eventPublisher) {
+            final ApplicationEventPublisher eventPublisher,
+            final ShapeStyleSanitizer shapeStyleSanitizer) {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
         this.cardRepository = cardRepository;
@@ -141,6 +147,7 @@ public class CanvasActionService {
         this.presenceRegistry = presenceRegistry;
         this.participantsBroadcastService = participantsBroadcastService;
         this.eventPublisher = eventPublisher;
+        this.shapeStyleSanitizer = shapeStyleSanitizer;
     }
 
     /**
@@ -342,12 +349,19 @@ public class CanvasActionService {
      * <p>{@code type} is parsed tolerantly — an unknown or missing value falls back to
      * {@link CardType#TEXT}, never an exception (parity spec §3.4). {@code clientTag}, if
      * present, is echoed back in the broadcast but never persisted (lets the sending client
-     * reconcile its own optimistic local object with the server-assigned id).
+     * reconcile its own optimistic local object with the server-assigned id). For
+     * {@link CardType#SHAPE} exactly (never for a mistyped value that fell back to
+     * {@link CardType#TEXT}), the incoming {@code content} — the pipe-delimited style string
+     * ({@code kind|stroke|fill|opacity|rotation}) — is sanitised by
+     * {@link ShapeStyleSanitizer} before persistence (US08.6.3, correctif §6.4).
      */
     private void handleCardCreate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
         CardType type = parseCardType(data.get("type"));
         String content = (String) data.getOrDefault("content", "");
+        if (type == CardType.SHAPE) {
+            content = shapeStyleSanitizer.sanitize(content);
+        }
         double posX = toDouble(data.get("posX"), 0);
         double posY = toDouble(data.get("posY"), 0);
 
@@ -473,14 +487,18 @@ public class CanvasActionService {
 
     /**
      * Handles a CARD_UPDATE action: updates a card's content if it exists, belongs to this
-     * board, and is not locked; refused silently otherwise. Broadcasts the full updated
-     * {@link CardDto} (re-read after the update), not just {@code {id, content}} — matching
-     * {@code card:created}/{@code card:moved}/{@code card:resized}/{@code card:recolored}, all
-     * of which broadcast a complete object, and the parity contract the six Sprint 12 card-type
-     * US all specify identically for {@code card:updated} (gap found independently by the
-     * US08.6.1 TEXT agent, PR core#77 — flagged there without fixing, folded into this Socle
-     * foundation fix instead since the other two gaps in this same PR are the same kind of
-     * cross-cutting, non-type-specific correction).
+     * board, and is not locked; refused silently otherwise. When the targeted card is a
+     * {@link CardType#SHAPE}, the incoming {@code content} is sanitised by
+     * {@link ShapeStyleSanitizer} before persistence, same as at creation (US08.6.3, correctif
+     * §6.4) — this pre-read does not weaken the atomic {@code locked}/board-ownership guard on
+     * the mutation query itself ({@link CardRepository#updateContentIfUnlocked}).
+     *
+     * <p>Broadcasts the full updated {@link CardDto} (re-read after the update), not just
+     * {@code {id, content}} — matching {@code card:created}/{@code card:moved}/
+     * {@code card:resized}/{@code card:recolored}, all of which broadcast a complete object,
+     * and the parity contract the six Sprint 12 card-type US all specify identically for
+     * {@code card:updated} (gap found independently by the US08.6.1 TEXT agent, PR core#77 —
+     * flagged there without fixing, folded into the Socle foundation fix instead).
      */
     private void handleCardUpdate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
@@ -489,6 +507,9 @@ public class CanvasActionService {
             return;
         }
         String content = (String) data.getOrDefault("content", "");
+        if (isShapeCard(id, boardId)) {
+            content = shapeStyleSanitizer.sanitize(content);
+        }
         int updated = cardRepository.updateContentIfUnlocked(id, boardId, content);
         if (updated == 0) {
             LOG.debug("Card update refused (locked, missing, or cross-board): id={} board={}", id, boardId);
@@ -509,6 +530,21 @@ public class CanvasActionService {
         eventPublisher.publishEvent(
                 new CardContentEnrichmentRequestedEvent(
                         id, boardId, principal.tenantId(), card.getType(), content));
+    }
+
+    /**
+     * Returns whether the given card id, scoped to this board, is currently a
+     * {@link CardType#SHAPE} — used only to decide whether {@code CARD_UPDATE}'s content needs
+     * shape-style sanitisation before persistence (US08.6.3).
+     *
+     * @param id      the card UUID
+     * @param boardId the owning board UUID
+     * @return {@code true} if the card exists, belongs to this board, and is a SHAPE
+     */
+    private boolean isShapeCard(final UUID id, final UUID boardId) {
+        return cardRepository.findByIdAndBoardId(id, boardId)
+                .map(c -> c.getType() == CardType.SHAPE)
+                .orElse(false);
     }
 
     /**
