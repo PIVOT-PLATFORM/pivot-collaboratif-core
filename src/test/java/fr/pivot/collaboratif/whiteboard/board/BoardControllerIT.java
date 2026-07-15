@@ -5,6 +5,7 @@ import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport.AuthFixture;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEvent;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventType;
+import fr.pivot.collaboratif.whiteboard.canvas.CardRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +25,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -87,6 +91,9 @@ class BoardControllerIT {
 
     @Autowired
     private CanvasEventRepository canvasEventRepository;
+
+    @Autowired
+    private CardRepository cardRepository;
 
     private MockMvc mockMvc;
 
@@ -284,6 +291,113 @@ class BoardControllerIT {
     }
 
     // -------------------------------------------------------------------------
+    // POST /whiteboard/boards — extended creation contract (US08.1.9)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Given a creation request with {@code maxParticipants}/{@code enabledActivities}/
+     * {@code coverImage}, when POST /whiteboard/boards is called, then all three are persisted
+     * and echoed back in the 201 response (US08.1.9 AC).
+     */
+    @Test
+    void ac08_1_9_19_createBoard_withSettingsFields_persistsAndReturnsThem() throws Exception {
+        mockMvc.perform(post(BASE_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content("{\"title\": \"Full Board\", \"maxParticipants\": 12, "
+                                + "\"enabledActivities\": [\"VOTE\", \"TIMER\"], "
+                                + "\"coverImage\": \"cover.png\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.maxParticipants").value(12))
+                .andExpect(jsonPath("$.enabledActivities[0]").value("VOTE"))
+                .andExpect(jsonPath("$.enabledActivities[1]").value("TIMER"))
+                .andExpect(jsonPath("$.coverImage").value("cover.png"))
+                .andExpect(jsonPath("$.shareCount").value(0));
+    }
+
+    /**
+     * Error case: given {@code maxParticipants} is zero (not strictly positive), when POST
+     * /whiteboard/boards is called, then it returns HTTP 400 before any board is persisted.
+     */
+    @Test
+    void ac08_1_9_20_createBoard_withZeroMaxParticipants_returns400() throws Exception {
+        mockMvc.perform(post(BASE_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content("{\"title\": \"Board\", \"maxParticipants\": 0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_MAX_PARTICIPANTS"));
+    }
+
+    /**
+     * Error case: given {@code maxParticipants} is negative, when POST /whiteboard/boards is
+     * called, then it returns HTTP 400.
+     */
+    @Test
+    void ac08_1_9_21_createBoard_withNegativeMaxParticipants_returns400() throws Exception {
+        mockMvc.perform(post(BASE_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content("{\"title\": \"Board\", \"maxParticipants\": -3}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Error case: given {@code enabledActivities} contains a code outside the known whitelist
+     * (the reachable form of "invalid element" at the service layer — a JSON element of the
+     * wrong type is coerced to string by Jackson and then rejected by the same whitelist check),
+     * when POST /whiteboard/boards is called, then it returns HTTP 400 with code
+     * "INVALID_ACTIVITY" and no board is persisted.
+     */
+    @Test
+    void ac08_1_9_22_createBoard_withUnknownActivity_returns400AndPersistsNothing() throws Exception {
+        mockMvc.perform(post(BASE_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content("{\"title\": \"Board\", \"enabledActivities\": [\"NOT_REAL\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ACTIVITY"));
+
+        mockMvc.perform(get(BASE_PATH)
+                        .header("Authorization", "Bearer " + tokenA))
+                .andExpect(jsonPath("$.totalElements").value(0));
+    }
+
+    /**
+     * Error case: given {@code enabledActivities} contains a JSON element that is not a
+     * string (a number), when POST /whiteboard/boards is called, then it returns HTTP 400 —
+     * Jackson coerces the numeric literal to its string form, which then fails the same
+     * whitelist check (there is no activity code {@code "123"}), giving the same observable
+     * 400 outcome as a genuinely unknown activity string.
+     */
+    @Test
+    void ac08_1_9_22b_createBoard_withNonStringActivityElement_returns400() throws Exception {
+        mockMvc.perform(post(BASE_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content("{\"title\": \"Board\", \"enabledActivities\": [123]}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Given no settings fields in the creation request (title only), when POST
+     * /whiteboard/boards is called, then the board is created with the pre-US08.1.9 defaults
+     * (contract unchanged for callers that only send a title).
+     */
+    @Test
+    void ac08_1_9_23_createBoard_titleOnly_hasNullSettingsAndZeroShareCount() throws Exception {
+        mockMvc.perform(post(BASE_PATH)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content("{\"title\": \"Plain Board\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.maxParticipants").doesNotExist())
+                .andExpect(jsonPath("$.enabledActivities").isEmpty())
+                .andExpect(jsonPath("$.coverImage").doesNotExist())
+                .andExpect(jsonPath("$.shareCount").value(0));
+    }
+
+    // -------------------------------------------------------------------------
     // GET /whiteboard/boards
     // -------------------------------------------------------------------------
 
@@ -337,6 +451,48 @@ class BoardControllerIT {
                 .andExpect(status().isBadRequest());
     }
 
+    /**
+     * Given a board shared with one EDITOR, when GET /whiteboard/boards is called by the
+     * owner, then the board's {@code shareCount} is 1 — one active share, the owner's own
+     * membership row excluded (US08.1.9 AC).
+     */
+    @Test
+    void ac08_1_9_27_listBoards_reflectsShareCountExcludingOwner() throws Exception {
+        String boardId = createBoardFor(tokenA, "Shared Board");
+        long editorId = PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantA, true);
+        insertBoardMember(UUID.fromString(boardId), editorId, BoardRole.EDITOR);
+
+        MvcResult result = mockMvc.perform(get(BASE_PATH)
+                        .header("Authorization", "Bearer " + tokenA))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        JsonNode found = null;
+        for (JsonNode b : body.get("boards")) {
+            if (b.get("id").asString().equals(boardId)) {
+                found = b;
+            }
+        }
+        assertThat(found).isNotNull();
+        assertThat(found.get("shareCount").asInt()).isEqualTo(1);
+    }
+
+    /**
+     * Given a board with no shares, when GET /whiteboard/boards is called, then {@code
+     * shareCount} is 0.
+     */
+    @Test
+    void ac08_1_9_28_listBoards_unsharedBoard_hasZeroShareCount() throws Exception {
+        createBoardFor(tokenA, "Solo Board");
+
+        mockMvc.perform(get(BASE_PATH)
+                        .header("Authorization", "Bearer " + tokenA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.boards[0].shareCount").value(0));
+    }
+
     // -------------------------------------------------------------------------
     // GET /whiteboard/boards/{boardId}
     // -------------------------------------------------------------------------
@@ -355,6 +511,73 @@ class BoardControllerIT {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(boardId))
                 .andExpect(jsonPath("$.title").value("My Board"));
+    }
+
+    /**
+     * Given a board with a persisted card carrying opaque metadata, when GET
+     * /whiteboard/boards/{boardId} is called, then the response embeds the card with its
+     * {@code fieldValues} (US08.1.9 AC) and the caller's {@code role}.
+     */
+    @Test
+    void ac08_1_9_24_findById_includesCardsWithFieldValuesAndRole() throws Exception {
+        String boardId = createBoardFor(tokenA, "Board With Cards");
+        fr.pivot.collaboratif.whiteboard.canvas.Card card = new fr.pivot.collaboratif.whiteboard.canvas.Card(
+                UUID.fromString(boardId), tenantA,
+                fr.pivot.collaboratif.whiteboard.canvas.CardType.LINK, "https://example.com",
+                10, 20, Instant.now());
+        card.setMeta("{\"title\":\"Example\"}");
+        cardRepository.save(card);
+
+        mockMvc.perform(get(BASE_PATH + "/" + boardId)
+                        .header("Authorization", "Bearer " + tokenA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("OWNER"))
+                .andExpect(jsonPath("$.cards", org.hamcrest.Matchers.hasSize(1)))
+                .andExpect(jsonPath("$.cards[0].content").value("https://example.com"))
+                .andExpect(jsonPath("$.cards[0].fieldValues.title").value("Example"))
+                .andExpect(jsonPath("$.frames").doesNotExist())
+                .andExpect(jsonPath("$.connections").doesNotExist())
+                .andExpect(jsonPath("$.fields").doesNotExist());
+    }
+
+    /**
+     * Given a board with no cards, when GET /whiteboard/boards/{boardId} is called, then the
+     * response contains an empty {@code cards} array (never {@code null}).
+     */
+    @Test
+    void ac08_1_9_25_findById_noCards_returnsEmptyCardsArray() throws Exception {
+        String boardId = createBoardFor(tokenA, "Empty Board");
+
+        mockMvc.perform(get(BASE_PATH + "/" + boardId)
+                        .header("Authorization", "Bearer " + tokenA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cards").isEmpty());
+    }
+
+    /**
+     * Given a board shared with an EDITOR, when GET /whiteboard/boards/{boardId} is called
+     * by that editor, then the response's {@code role} reflects the editor's own role (not
+     * the owner's), alongside the board's cards.
+     */
+    @Test
+    void ac08_1_9_26_findById_asEditor_returnsCardsAndEditorRole() throws Exception {
+        String boardId = createBoardFor(tokenA, "Shared With Cards");
+        fr.pivot.collaboratif.whiteboard.canvas.Card card = new fr.pivot.collaboratif.whiteboard.canvas.Card(
+                UUID.fromString(boardId), tenantA,
+                fr.pivot.collaboratif.whiteboard.canvas.CardType.TEXT, "Note", 0, 0, Instant.now());
+        cardRepository.save(card);
+        long editorId = PlatformAuthTestSupport.seedUser(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(), tenantA, true);
+        String editorToken = PlatformAuthTestSupport.issueToken(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword(),
+                editorId, "active", Instant.now().plusSeconds(3600));
+        insertBoardMember(UUID.fromString(boardId), editorId, BoardRole.EDITOR);
+
+        mockMvc.perform(get(BASE_PATH + "/" + boardId)
+                        .header("Authorization", "Bearer " + editorToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("EDITOR"))
+                .andExpect(jsonPath("$.cards", org.hamcrest.Matchers.hasSize(1)));
     }
 
     /**
@@ -510,5 +733,28 @@ class BoardControllerIT {
                 .andReturn();
         JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
         return body.get("id").asText();
+    }
+
+    /**
+     * Inserts a board_member row directly, bypassing the join/share flow (not under test here)
+     * — used by the US08.1.9 {@code findById} tests that need a non-owner member.
+     *
+     * @param boardId the board UUID
+     * @param userId  the member's user id
+     * @param role    the member's role
+     * @throws Exception if the insert fails
+     */
+    private void insertBoardMember(final UUID boardId, final long userId, final BoardRole role)
+            throws Exception {
+        String sql = "INSERT INTO collaboratif.board_member (board_id, user_id, role, joined_at) "
+                + "VALUES (?, ?, ?, now())";
+        try (Connection conn = DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, boardId);
+            ps.setLong(2, userId);
+            ps.setString(3, role.name());
+            ps.executeUpdate();
+        }
     }
 }

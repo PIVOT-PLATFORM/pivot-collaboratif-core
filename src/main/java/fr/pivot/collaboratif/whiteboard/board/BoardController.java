@@ -59,10 +59,12 @@ public class BoardController {
      *
      * <p>When {@code templateId} is given, the board's canvas is initialized from that
      * whiteboard template's elements (US08.4.1). Omitting it creates a blank board
-     * (US08.1.1 behaviour, unchanged).
+     * (US08.1.1 behaviour, unchanged). {@code maxParticipants}/{@code enabledActivities}/
+     * {@code coverImage} (US08.1.9) complete the creation contract beyond the title alone —
+     * every one of them is optional.
      *
      * @param request    the board creation request — must contain a non-blank title of at most
-     *                   100 characters
+     *                   100 characters, plus the optional US08.1.9 settings fields
      * @param templateId optional raw {@code templateId} query parameter identifying a global
      *                   template to initialize the board's canvas from
      * @param principal  the resolved caller identity (user + tenant)
@@ -75,7 +77,8 @@ public class BoardController {
             @RequestParam(name = "templateId", required = false) final String templateId,
             final RequestPrincipal principal) {
         return boardService.create(
-                request.title(), principal.userId(), principal.tenantId(), templateId);
+                request.title(), principal.userId(), principal.tenantId(), templateId,
+                request.maxParticipants(), request.enabledActivities(), request.coverImage());
     }
 
     /**

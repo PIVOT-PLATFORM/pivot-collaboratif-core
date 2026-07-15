@@ -11,6 +11,9 @@ import fr.pivot.collaboratif.whiteboard.board.dto.BoardResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.PatchBoardRequest;
 import fr.pivot.collaboratif.whiteboard.board.dto.SaveAsTemplateRequest;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
+import fr.pivot.collaboratif.whiteboard.canvas.Card;
+import fr.pivot.collaboratif.whiteboard.canvas.CardRepository;
+import fr.pivot.collaboratif.whiteboard.canvas.CardType;
 import fr.pivot.collaboratif.whiteboard.canvas.WhiteboardBroadcastService;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplate;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplateService;
@@ -21,6 +24,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.util.List;
@@ -62,6 +66,9 @@ class BoardServiceTest {
     private CanvasEventRepository canvasEventRepository;
 
     @Mock
+    private CardRepository cardRepository;
+
+    @Mock
     private WhiteboardModuleCheck moduleCheck;
 
     @Mock
@@ -80,7 +87,8 @@ class BoardServiceTest {
     void setUp() {
         boardService = new BoardService(
                 boardRepository, boardMemberRepository, boardFavoriteRepository,
-                canvasEventRepository, moduleCheck, templateService, broadcastService);
+                canvasEventRepository, cardRepository, moduleCheck, templateService,
+                broadcastService, new ObjectMapper());
     }
 
     // -------------------------------------------------------------------------
@@ -273,6 +281,143 @@ class BoardServiceTest {
         BoardResponse response = boardService.findById(boardId, editorId, TENANT_A);
 
         assertThat(response.role()).isEqualTo("EDITOR");
+    }
+
+    // -------------------------------------------------------------------------
+    // findById() — cards + fieldValues + shareCount (US08.1.9)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void ac08_1_9_01_findById_includesCardsWithFieldValues() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "My Board", USER_A, TENANT_A);
+        Card card = cardWithId(UUID.randomUUID(),
+                new Card(boardId, TENANT_A, CardType.TEXT, "Hello", 1, 2, Instant.now()));
+        card.setMeta("{\"title\":\"OpenGraph title\"}");
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(false);
+        when(cardRepository.findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(boardId, TENANT_A))
+                .thenReturn(List.of(card));
+
+        BoardResponse response = boardService.findById(boardId, USER_A, TENANT_A);
+
+        assertThat(response.cards()).hasSize(1);
+        assertThat(response.cards().get(0).content()).isEqualTo("Hello");
+        assertThat(response.cards().get(0).fieldValues()).containsEntry("title", "OpenGraph title");
+    }
+
+    @Test
+    void ac08_1_9_02_findById_cardWithoutMeta_hasNullFieldValues() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "My Board", USER_A, TENANT_A);
+        Card card = cardWithId(UUID.randomUUID(),
+                new Card(boardId, TENANT_A, CardType.TEXT, "No meta", 0, 0, Instant.now()));
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(false);
+        when(cardRepository.findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(boardId, TENANT_A))
+                .thenReturn(List.of(card));
+
+        BoardResponse response = boardService.findById(boardId, USER_A, TENANT_A);
+
+        assertThat(response.cards().get(0).fieldValues()).isNull();
+    }
+
+    @Test
+    void ac08_1_9_03_findById_noCards_returnsEmptyCardsList() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Empty Board", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(false);
+        when(cardRepository.findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(boardId, TENANT_A))
+                .thenReturn(List.of());
+
+        BoardResponse response = boardService.findById(boardId, USER_A, TENANT_A);
+
+        assertThat(response.cards()).isEmpty();
+    }
+
+    @Test
+    void ac08_1_9_04_findById_reflectsShareCountExcludingOwner() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Shared", USER_A, TENANT_A);
+        when(boardRepository.findByIdAndTenantIdAndDeletedAtIsNull(boardId, TENANT_A))
+                .thenReturn(Optional.of(board));
+        when(boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, USER_A)).thenReturn(false);
+        when(boardMemberRepository.countByIdBoardIdAndRoleNot(boardId, BoardRole.OWNER)).thenReturn(3L);
+
+        BoardResponse response = boardService.findById(boardId, USER_A, TENANT_A);
+
+        assertThat(response.shareCount()).isEqualTo(3);
+    }
+
+    @Test
+    void ac08_1_9_05_findAccessible_populatesShareCountPerBoard() {
+        UUID boardId = UUID.randomUUID();
+        Board board = boardWithOwner(boardId, "Board", USER_A, TENANT_A);
+        when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), isNull(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(board)));
+        when(boardFavoriteRepository.findFavoritedBoardIds(eq(USER_A), any())).thenReturn(List.of());
+        when(boardMemberRepository.countByIdBoardIdAndRoleNot(boardId, BoardRole.OWNER)).thenReturn(2L);
+
+        BoardPageResponse page = boardService.findAccessible(USER_A, TENANT_A, null, 0, 20);
+
+        assertThat(page.boards().get(0).shareCount()).isEqualTo(2);
+    }
+
+    // -------------------------------------------------------------------------
+    // create() — extended settings contract (US08.1.9)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void ac08_1_9_06_create_withSettingsFields_persistsThemOnBoard() {
+        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
+        Board savedBoard = boardWithOwner(UUID.randomUUID(), "My Board", USER_A, TENANT_A);
+        when(boardRepository.save(any(Board.class))).thenAnswer(inv -> {
+            Board passed = inv.getArgument(0);
+            assertThat(passed.getMaxParticipants()).isEqualTo(8);
+            assertThat(passed.getEnabledActivities()).containsExactly("VOTE");
+            assertThat(passed.getCoverImage()).isEqualTo("cover.png");
+            return savedBoard;
+        });
+        when(boardMemberRepository.save(any(BoardMember.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        boardService.create(
+                "My Board", USER_A, TENANT_A, null, 8, List.of("VOTE"), "cover.png");
+
+        verify(boardRepository).save(any(Board.class));
+    }
+
+    @Test
+    void ac08_1_9_07_create_withUnknownActivity_throwsInvalidActivityAndPersistsNothing() {
+        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
+
+        assertThatThrownBy(() -> boardService.create(
+                "My Board", USER_A, TENANT_A, null, null, List.of("NOT_A_REAL_ACTIVITY"), null))
+                .isInstanceOf(InvalidActivityException.class);
+
+        verify(boardRepository, never()).save(any());
+        verify(boardMemberRepository, never()).save(any());
+    }
+
+    @Test
+    void ac08_1_9_08_create_withoutSettingsFields_boardHasDefaults() {
+        when(moduleCheck.isEnabled(TENANT_A)).thenReturn(true);
+        Board savedBoard = boardWithOwner(UUID.randomUUID(), "My Board", USER_A, TENANT_A);
+        when(boardRepository.save(any(Board.class))).thenReturn(savedBoard);
+        when(boardMemberRepository.save(any(BoardMember.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        BoardResponse response = boardService.create(
+                "My Board", USER_A, TENANT_A, null, null, null, null);
+
+        assertThat(response.maxParticipants()).isNull();
+        assertThat(response.enabledActivities()).isEmpty();
+        assertThat(response.coverImage()).isNull();
+        assertThat(response.shareCount()).isZero();
     }
 
     // -------------------------------------------------------------------------
@@ -717,5 +862,21 @@ class BoardServiceTest {
             throw new IllegalStateException("Failed to set board id in test", ex);
         }
         return board;
+    }
+
+    /**
+     * Sets a {@link Card}'s id via reflection, simulating a JPA-persisted entity whose id is
+     * assigned by the database (US08.1.9 {@code findById} tests — the card-to-response mapping
+     * requires a non-null id).
+     */
+    private Card cardWithId(final UUID id, final Card card) {
+        try {
+            java.lang.reflect.Field field = Card.class.getDeclaredField("id");
+            field.setAccessible(true);
+            field.set(card, id);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Failed to set card id in test", ex);
+        }
+        return card;
     }
 }

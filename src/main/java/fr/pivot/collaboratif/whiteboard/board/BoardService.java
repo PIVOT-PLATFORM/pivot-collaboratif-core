@@ -5,27 +5,34 @@ import fr.pivot.collaboratif.exception.BoardNotFoundException;
 import fr.pivot.collaboratif.exception.BoardNotInTrashException;
 import fr.pivot.collaboratif.exception.InvalidActivityException;
 import fr.pivot.collaboratif.exception.WhiteboardModuleDisabledException;
+import fr.pivot.collaboratif.whiteboard.board.dto.BoardCardResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardPageResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.BoardResponse;
 import fr.pivot.collaboratif.whiteboard.board.dto.PatchBoardRequest;
 import fr.pivot.collaboratif.whiteboard.board.dto.SaveAsTemplateRequest;
 import fr.pivot.collaboratif.whiteboard.canvas.CanvasEventRepository;
+import fr.pivot.collaboratif.whiteboard.canvas.Card;
+import fr.pivot.collaboratif.whiteboard.canvas.CardRepository;
 import fr.pivot.collaboratif.whiteboard.canvas.WhiteboardBroadcastService;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplate;
 import fr.pivot.collaboratif.whiteboard.template.WhiteboardTemplateService;
 import fr.pivot.collaboratif.whiteboard.template.dto.TemplateResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
 
 import java.text.Normalizer;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -45,6 +52,8 @@ import java.util.UUID;
 @Transactional(readOnly = true)
 public class BoardService {
 
+    private static final Logger LOG = LoggerFactory.getLogger(BoardService.class);
+
     /** Maximum allowed page size to prevent unbounded result sets. */
     private static final int MAX_PAGE_SIZE = 50;
 
@@ -52,9 +61,11 @@ public class BoardService {
     private final BoardMemberRepository boardMemberRepository;
     private final BoardFavoriteRepository boardFavoriteRepository;
     private final CanvasEventRepository canvasEventRepository;
+    private final CardRepository cardRepository;
     private final WhiteboardModuleCheck moduleCheck;
     private final WhiteboardTemplateService templateService;
     private final WhiteboardBroadcastService broadcastService;
+    private final ObjectMapper objectMapper;
 
     /**
      * Creates the service with all required dependencies.
@@ -63,27 +74,36 @@ public class BoardService {
      * @param boardMemberRepository   repository for board membership persistence
      * @param boardFavoriteRepository repository for per-user favorites (US08.1.6)
      * @param canvasEventRepository   repository for canvas events (US08.2.4 reset/save-as-template)
+     * @param cardRepository          repository for durable card state, read-only here, used to
+     *                                embed cards with field values in {@code GET
+     *                                /whiteboard/boards/{boardId}} (US08.1.9)
      * @param moduleCheck             check for whiteboard module activation
      * @param templateService         service resolving templates and initializing a board's
      *                                canvas from one, and snapshotting a board into a new
      *                                template (US08.4.1 / US08.2.4)
      * @param broadcastService        STOMP broadcaster for board reset events (US08.2.4)
+     * @param objectMapper            Jackson mapper used to parse a card's opaque metadata
+     *                                cache into the {@code fieldValues} wire map (US08.1.9)
      */
     public BoardService(
             final BoardRepository boardRepository,
             final BoardMemberRepository boardMemberRepository,
             final BoardFavoriteRepository boardFavoriteRepository,
             final CanvasEventRepository canvasEventRepository,
+            final CardRepository cardRepository,
             final WhiteboardModuleCheck moduleCheck,
             final WhiteboardTemplateService templateService,
-            final WhiteboardBroadcastService broadcastService) {
+            final WhiteboardBroadcastService broadcastService,
+            final ObjectMapper objectMapper) {
         this.boardRepository = boardRepository;
         this.boardMemberRepository = boardMemberRepository;
         this.boardFavoriteRepository = boardFavoriteRepository;
         this.canvasEventRepository = canvasEventRepository;
+        this.cardRepository = cardRepository;
         this.moduleCheck = moduleCheck;
         this.templateService = templateService;
         this.broadcastService = broadcastService;
+        this.objectMapper = objectMapper;
     }
 
     // -------------------------------------------------------------------------
@@ -123,21 +143,76 @@ public class BoardService {
     @Transactional
     public BoardResponse create(
             final String title, final Long userId, final Long tenantId, final String templateId) {
+        return create(title, userId, tenantId, templateId, null, null, null);
+    }
+
+    /**
+     * Creates a new board and assigns the caller as OWNER, with the full creation contract
+     * (US08.1.9, parity §2.2, line 313): optional template initialization (US08.4.1) plus
+     * optional {@code maxParticipants}/{@code enabledActivities}/{@code coverImage} settings
+     * (the same fields {@code PATCH} already accepts, US08.2.4), persisted directly on the
+     * created board rather than requiring a follow-up {@code PATCH} call.
+     *
+     * <p>Validation order: the module-activation check, then {@code enabledActivities}
+     * whitelist validation (if present), both <strong>before</strong> any row is persisted —
+     * an invalid activity code never leaves a partial board behind.
+     *
+     * @param title             board title (1–100 chars, validated at the controller layer)
+     * @param userId            calling user's {@code public.users.id}
+     * @param tenantId          calling tenant's {@code public.tenants.id}
+     * @param templateId        raw {@code templateId} request parameter, or {@code null}/blank
+     *                          for a blank board (US08.1.1 behaviour, unchanged)
+     * @param maxParticipants   optional maximum simultaneous participant count (strictly
+     *                          positive, validated at the controller layer), or {@code null}
+     * @param enabledActivities optional whitelisted activity codes, or {@code null}
+     * @param coverImage        optional cover image URL/string, or {@code null}
+     * @return the created board as a response record
+     * @throws WhiteboardModuleDisabledException                        if the module is inactive
+     * @throws InvalidActivityException                                  if an unknown activity
+     *                                                                    code is supplied
+     * @throws fr.pivot.collaboratif.exception.InvalidTemplateIdException if {@code templateId}
+     *                                                                    is not a valid UUID
+     * @throws fr.pivot.collaboratif.exception.TemplateNotFoundException  if {@code templateId}
+     *                                                                    does not resolve
+     */
+    @Transactional
+    public BoardResponse create(
+            final String title,
+            final Long userId,
+            final Long tenantId,
+            final String templateId,
+            final Integer maxParticipants,
+            final List<String> enabledActivities,
+            final String coverImage) {
         if (!moduleCheck.isEnabled(tenantId)) {
             throw new WhiteboardModuleDisabledException(tenantId);
+        }
+        if (enabledActivities != null) {
+            validateActivities(enabledActivities);
         }
         WhiteboardTemplate template = null;
         if (templateId != null && !templateId.isBlank()) {
             template = templateService.resolveGlobalTemplate(templateId);
         }
         Instant now = Instant.now();
-        Board board = boardRepository.save(new Board(title, tenantId, userId, now));
+        Board newBoard = new Board(title, tenantId, userId, now);
+        if (maxParticipants != null) {
+            newBoard.setMaxParticipants(maxParticipants);
+        }
+        if (enabledActivities != null) {
+            newBoard.setEnabledActivities(enabledActivities);
+        }
+        if (coverImage != null) {
+            newBoard.setCoverImage(coverImage);
+        }
+        Board board = boardRepository.save(newBoard);
         BoardMemberId memberId = new BoardMemberId(board.getId(), userId);
         boardMemberRepository.save(new BoardMember(memberId, BoardRole.OWNER, now));
         if (template != null) {
             templateService.initializeBoard(template, board.getId(), tenantId, userId);
         }
-        return BoardResponse.from(board, BoardRole.OWNER, false);
+        // A freshly created board has no shares yet — 0, no query needed.
+        return BoardResponse.from(board, BoardRole.OWNER, false, 0);
     }
 
     // -------------------------------------------------------------------------
@@ -209,7 +284,7 @@ public class BoardService {
         Page<Board> boardPage = boardRepository
                 .findByOwnerIdAndTenantIdAndDeletedAtIsNotNull(userId, tenantId, pageable);
         List<BoardResponse> responses = boardPage.getContent().stream()
-                .map(b -> BoardResponse.forTrash(b, BoardRole.OWNER))
+                .map(b -> BoardResponse.forTrash(b, BoardRole.OWNER, shareCountOf(b.getId())))
                 .toList();
         return new BoardPageResponse(
                 responses,
@@ -233,7 +308,12 @@ public class BoardService {
         Board board = requireAccessibleBoard(boardId, tenantId);
         BoardRole role = resolveRole(boardId, userId, board.getOwnerId());
         boolean favorite = boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, userId);
-        return BoardResponse.from(board, role, favorite);
+        List<BoardCardResponse> cards = cardRepository
+                .findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(boardId, tenantId)
+                .stream()
+                .map(this::toCardResponse)
+                .toList();
+        return BoardResponse.withCards(board, role, favorite, shareCountOf(boardId), cards);
     }
 
     // -------------------------------------------------------------------------
@@ -281,7 +361,7 @@ public class BoardService {
         Board saved = boardRepository.save(board);
         logAuditEvent("BoardUpdated", boardId, userId, "title=" + saved.getTitle());
         boolean favorite = boardFavoriteRepository.existsByIdBoardIdAndIdUserId(boardId, userId);
-        return BoardResponse.from(saved, BoardRole.OWNER, favorite);
+        return BoardResponse.from(saved, BoardRole.OWNER, favorite, shareCountOf(boardId));
     }
 
     // -------------------------------------------------------------------------
@@ -535,7 +615,42 @@ public class BoardService {
     private BoardResponse toBoardResponse(
             final Board board, final Long userId, final boolean favorite) {
         BoardRole role = resolveRole(board.getId(), userId, board.getOwnerId());
-        return BoardResponse.from(board, role, favorite);
+        return BoardResponse.from(board, role, favorite, shareCountOf(board.getId()));
+    }
+
+    /**
+     * Counts active shares (members other than the owner) on a board (US08.1.9, parity §2.2).
+     *
+     * @param boardId the board UUID
+     * @return the number of shares, as an {@code int} (never large enough to overflow in
+     *         practice — a board's membership is bounded by its {@code maxParticipants}/UI
+     *         constraints, not an unbounded collection)
+     */
+    private int shareCountOf(final UUID boardId) {
+        return (int) boardMemberRepository.countByIdBoardIdAndRoleNot(boardId, BoardRole.OWNER);
+    }
+
+    /**
+     * Maps a persisted {@link Card} to its {@link BoardCardResponse} wire shape for {@code GET
+     * /whiteboard/boards/{boardId}} (US08.1.9), parsing the opaque {@code meta} JSONB column
+     * (if present) into the {@code fieldValues} map — mirrors {@code
+     * CanvasActionService#toDto}'s equivalent parsing for the WebSocket wire shape.
+     *
+     * @param card the persisted card
+     * @return the corresponding {@link BoardCardResponse}
+     */
+    @SuppressWarnings("unchecked")
+    private BoardCardResponse toCardResponse(final Card card) {
+        Map<String, Object> fieldValues = null;
+        if (card.getMeta() != null) {
+            try {
+                fieldValues = objectMapper.readValue(card.getMeta(), Map.class);
+            } catch (Exception e) {
+                LOG.warn("Could not parse card meta JSON as fieldValues: cardId={} error={}",
+                        card.getId(), e.getMessage());
+            }
+        }
+        return BoardCardResponse.of(card, fieldValues);
     }
 
     /**

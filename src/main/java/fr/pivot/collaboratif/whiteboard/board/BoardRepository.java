@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -97,4 +98,23 @@ public interface BoardRepository extends JpaRepository<Board, UUID> {
      * @return an {@link Optional} containing the board (trashed or not), or empty if not found
      */
     Optional<Board> findByIdAndTenantId(UUID id, Long tenantId);
+
+    /**
+     * Returns the ids of every non-trashed board accessible by a user within a tenant (owner or
+     * active member) — an unpaginated variant of {@link #findAccessibleByUser} used by {@code
+     * GET /whiteboard/boards/presence} (US08.1.9) to scope the presence count to boards the
+     * caller may actually see (no cross-board/cross-tenant presence leak).
+     *
+     * @param userId   the {@code public.users.id} of the user whose accessible board ids to find
+     * @param tenantId the {@code public.tenants.id} to restrict results to
+     * @return the ids of every board accessible to the specified user
+     */
+    @Query("""
+            SELECT DISTINCT b.id FROM Board b
+            LEFT JOIN BoardMember bm ON bm.id.boardId = b.id AND bm.id.userId = :userId
+            WHERE b.tenantId = :tenantId
+              AND b.deletedAt IS NULL
+              AND (b.ownerId = :userId OR bm.id.userId = :userId)
+            """)
+    List<UUID> findAccessibleBoardIds(@Param("userId") Long userId, @Param("tenantId") Long tenantId);
 }
