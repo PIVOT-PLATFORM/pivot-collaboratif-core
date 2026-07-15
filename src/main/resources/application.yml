@@ -104,3 +104,11 @@ pivot:
     relay-enabled: ${PIVOT_ACTIVEMQ_RELAY_ENABLED:true}
     relay-host: ${PIVOT_ACTIVEMQ_RELAY_HOST:activemq}
     relay-port: ${PIVOT_ACTIVEMQ_RELAY_PORT:61613}
+  whiteboard:
+    card:
+      image:
+        # US08.6.4 — upper bound (bytes) on a CARD_CREATE IMAGE's decoded Base64 payload,
+        # enforced by ImageCardContentValidator before persistence. 5 MiB comfortably fits a
+        # dimensioned-down screenshot/photo (the client already caps display size to 700x600px
+        # before sending) while bounding worst-case `card` row size.
+        max-bytes: ${PIVOT_WHITEBOARD_IMAGE_MAX_BYTES:5242880}

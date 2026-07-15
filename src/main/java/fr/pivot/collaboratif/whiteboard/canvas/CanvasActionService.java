@@ -95,6 +95,7 @@ public class CanvasActionService {
     private final ParticipantsBroadcastService participantsBroadcastService;
     private final ApplicationEventPublisher eventPublisher;
     private final ShapeStyleSanitizer shapeStyleSanitizer;
+    private final ImageCardContentValidator imageCardContentValidator;
 
     /**
      * Creates the service.
@@ -122,6 +123,8 @@ public class CanvasActionService {
      *                                       ({@code kind}/{@code stroke}/{@code fill}/
      *                                       {@code opacity}/{@code rotation}, pipe-delimited)
      *                                       before persistence (US08.6.3, correctif §6.4)
+     * @param imageCardContentValidator      server-side MIME/size validation for
+     *                                       {@link CardType#IMAGE} content (US08.6.4)
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -135,7 +138,8 @@ public class CanvasActionService {
             final WhiteboardPresenceRegistry presenceRegistry,
             final ParticipantsBroadcastService participantsBroadcastService,
             final ApplicationEventPublisher eventPublisher,
-            final ShapeStyleSanitizer shapeStyleSanitizer) {
+            final ShapeStyleSanitizer shapeStyleSanitizer,
+            final ImageCardContentValidator imageCardContentValidator) {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
         this.cardRepository = cardRepository;
@@ -148,6 +152,7 @@ public class CanvasActionService {
         this.participantsBroadcastService = participantsBroadcastService;
         this.eventPublisher = eventPublisher;
         this.shapeStyleSanitizer = shapeStyleSanitizer;
+        this.imageCardContentValidator = imageCardContentValidator;
     }
 
     /**
@@ -354,6 +359,14 @@ public class CanvasActionService {
      * {@link CardType#TEXT}), the incoming {@code content} — the pipe-delimited style string
      * ({@code kind|stroke|fill|opacity|rotation}) — is sanitised by
      * {@link ShapeStyleSanitizer} before persistence (US08.6.3, correctif §6.4).
+     *
+     * <p><strong>{@code type == IMAGE}</strong> (US08.6.4): {@code content} is passed through
+     * {@link ImageCardContentValidator#sanitize} before persistence — real MIME sniffing and a
+     * size bound, a hardening over the reference whiteboard's unvalidated {@code coverImage}
+     * (parity spec §2.7/§6.12, flagged explicitly in this US's Security AC). An invalid image
+     * (malformed data URL, oversized, or unrecognised signature) silently drops the whole
+     * {@code CARD_CREATE} — no card persisted, no broadcast — consistent with every other
+     * {@code card:*} refusal path in this Socle.
      */
     private void handleCardCreate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
@@ -364,6 +377,16 @@ public class CanvasActionService {
         }
         double posX = toDouble(data.get("posX"), 0);
         double posY = toDouble(data.get("posY"), 0);
+
+        if (type == CardType.IMAGE) {
+            Optional<String> sanitizedContent = imageCardContentValidator.sanitize(content);
+            if (sanitizedContent.isEmpty()) {
+                LOG.warn("Card create refused: invalid IMAGE content — board={} user={}",
+                        boardId, principal.userId());
+                return;
+            }
+            content = sanitizedContent.get();
+        }
 
         Card card = new Card(boardId, principal.tenantId(), type, content, posX, posY, Instant.now());
         if (data.get("color") instanceof String c) {
