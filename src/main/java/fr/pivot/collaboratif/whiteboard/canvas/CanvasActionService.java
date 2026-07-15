@@ -22,6 +22,7 @@ import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -39,6 +40,20 @@ import java.util.UUID;
  *   <li>{@code /topic/whiteboard/{boardId}/presence} — PARTICIPANTS_UPDATE with the
  *       full list of connected participants, emitted on every JOIN and LEAVE.</li>
  * </ul>
+ *
+ * <p><strong>Sender exclusion for {@code card:moved}/{@code card:resized} (fix/EN08.4).</strong>
+ * Every broadcast still goes to the whole room — the simple broker has no built-in
+ * "send to all but one" primitive on a shared topic, and building a per-subscriber targeted
+ * fanout server-side would be disproportionate for this Socle. Instead, {@link #handleCardMove}
+ * and {@link #handleCardResize} alone echo back a client-supplied {@code senderSessionId} field
+ * (an opaque, client-generated correlation id — not the server's STOMP {@code sessionId}; see
+ * {@link #handleCardMove}'s Javadoc for why) when the incoming action carries one; the frontend
+ * filters client-side, ignoring the echo when {@code senderSessionId} matches its own value
+ * (avoids the visual jitter of re-applying a move/resize it already applied optimistically).
+ * {@code card:recolored}/{@code card:deleted} are deliberately left unchanged — broadcast to the
+ * whole room including the sender, same as before this fix. {@code card:updated} is unaffected
+ * by sender exclusion too, but its payload shape did change in this same fix — see
+ * {@link #handleCardUpdate}'s Javadoc.
  *
  * <p><strong>Wire naming</strong> is resolved via {@link CanvasEventType#fromWire} (incoming)
  * and {@link CanvasEventType#wireOut()} (outgoing) — see that class's Javadoc for why these
@@ -354,6 +369,34 @@ public class CanvasActionService {
     /**
      * Handles a CARD_MOVE action: moves a card if it exists, belongs to this board, and is
      * not locked; refused silently otherwise (no broadcast, no error frame).
+     *
+     * <p>If the incoming action carries a client-supplied {@code senderSessionId} (an opaque,
+     * client-generated correlation id — one per {@code StompBoardTransport} connection, not the
+     * server's STOMP session id), it is echoed back verbatim in the broadcast payload, same
+     * idiom as {@code clientTag} on {@link #handleCardCreate}: never persisted, only round-
+     * tripped so the sending client can recognise and ignore its own echo (it already applied
+     * the move optimistically) while every other session in the room still applies it normally.
+     *
+     * <p><strong>Why not the server's own STOMP session id.</strong> An earlier version of this
+     * fix threaded the real {@code simpSessionId} through and tried to hand it back to the
+     * client via a stamped header on the STOMP {@code CONNECTED} frame (a
+     * {@code clientOutboundChannel} interceptor). That does not work with this repo's
+     * {@code SimpleBroker}: {@code StompSubProtocolHandler#convertConnectAcktoStompConnected}
+     * unconditionally rebuilds the CONNECTED frame's headers from scratch, copying only
+     * {@code version}/{@code heartbeat} — any other native header added upstream is silently
+     * discarded before the frame reaches the wire (verified empirically, reproduced against a
+     * real STOMP client in a Testcontainers IT). Round-tripping a client-generated id sidesteps
+     * this Spring limitation entirely and needed no other change to this repo's WebSocket
+     * config.
+     *
+     * <p>This is a client-side filter, not a server-side targeted fanout: the simple broker
+     * still sends this broadcast to the whole room (see {@link #broadcast}), same as every
+     * other {@code CARD_*} event — only the payload optionally gains this one extra field
+     * (fix/EN08.4, sender exclusion for {@code card:moved}/{@code card:resized} only).
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARD_MOVE action
+     * @param principal the emitting principal
      */
     private void handleCardMove(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
@@ -368,13 +411,28 @@ public class CanvasActionService {
             LOG.debug("Card move refused (locked, missing, or cross-board): id={} board={}", id, boardId);
             return;
         }
-        broadcast(boardId, principal, CanvasEventType.CARD_MOVE,
-                Map.of("id", id.toString(), "posX", posX, "posY", posY));
+        Map<String, Object> broadcastData = new HashMap<>();
+        broadcastData.put("id", id.toString());
+        broadcastData.put("posX", posX);
+        broadcastData.put("posY", posY);
+        if (data.get("senderSessionId") != null) {
+            broadcastData.put("senderSessionId", data.get("senderSessionId"));
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_MOVE, broadcastData);
     }
 
     /**
      * Handles a CARD_RESIZE action: resizes a card if it exists, belongs to this board, and
      * is not locked; refused silently otherwise.
+     *
+     * <p>Echoes back a client-supplied {@code senderSessionId} for the same sender-exclusion
+     * reason as {@link #handleCardMove} — see that method's Javadoc for the full rationale,
+     * including why this is a client-generated correlation id and not the server's STOMP
+     * session id.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARD_RESIZE action
+     * @param principal the emitting principal
      */
     private void handleCardResize(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
@@ -389,13 +447,26 @@ public class CanvasActionService {
             LOG.debug("Card resize refused (locked, missing, or cross-board): id={} board={}", id, boardId);
             return;
         }
-        broadcast(boardId, principal, CanvasEventType.CARD_RESIZE,
-                Map.of("id", id.toString(), "width", width, "height", height));
+        Map<String, Object> broadcastData = new HashMap<>();
+        broadcastData.put("id", id.toString());
+        broadcastData.put("width", width);
+        broadcastData.put("height", height);
+        if (data.get("senderSessionId") != null) {
+            broadcastData.put("senderSessionId", data.get("senderSessionId"));
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_RESIZE, broadcastData);
     }
 
     /**
      * Handles a CARD_UPDATE action: updates a card's content if it exists, belongs to this
-     * board, and is not locked; refused silently otherwise.
+     * board, and is not locked; refused silently otherwise. Broadcasts the full updated
+     * {@link CardDto} (re-read after the update), not just {@code {id, content}} — matching
+     * {@code card:created}/{@code card:moved}/{@code card:resized}/{@code card:recolored}, all
+     * of which broadcast a complete object, and the parity contract the six Sprint 12 card-type
+     * US all specify identically for {@code card:updated} (gap found independently by the
+     * US08.6.1 TEXT agent, PR core#77 — flagged there without fixing, folded into this Socle
+     * foundation fix instead since the other two gaps in this same PR are the same kind of
+     * cross-cutting, non-type-specific correction).
      */
     private void handleCardUpdate(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
@@ -409,8 +480,15 @@ public class CanvasActionService {
             LOG.debug("Card update refused (locked, missing, or cross-board): id={} board={}", id, boardId);
             return;
         }
-        broadcast(boardId, principal, CanvasEventType.CARD_UPDATE,
-                Map.of("id", id.toString(), "content", content));
+        Card card = cardRepository.findById(id).orElse(null);
+        if (card == null) {
+            // Extremely unlikely race (deleted concurrently between the UPDATE above and this
+            // read) — nothing meaningful left to broadcast; the client that deleted it already
+            // gets its own card:deleted broadcast.
+            LOG.debug("Card update broadcast skipped: card vanished after update, id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARD_UPDATE, toFlatMap(toDto(card)));
     }
 
     /**
@@ -434,14 +512,30 @@ public class CanvasActionService {
     }
 
     /**
-     * Handles a CARD_DELETE action: deletes a card scoped by board. Idempotent — deleting an
-     * id that does not exist (already deleted, wrong board, or never existed) is a silent
-     * no-op, never an exception. Deliberately not guarded by {@code locked} in this Socle.
+     * Handles a CARD_DELETE action: deletes a card scoped by board, guarded by an explicit
+     * {@code locked} read performed <em>before</em> the delete itself (fix/EN08.4 — the six
+     * Sprint 12 card-type US all specify this guard identically: a locked card refuses
+     * {@code card:delete} silently, same posture as move/resize/update/recolor). Unlike those
+     * four, this guard cannot live in the {@code WHERE} clause of a single
+     * {@code UPDATE}/{@code DELETE} statement, since there is nothing left to condition on once
+     * the row is gone — hence the separate read here rather than a query-level change to
+     * {@link CardRepository#deleteByIdAndBoardId}.
+     *
+     * <p>Idempotent — deleting an id that does not exist (already deleted, wrong board, or
+     * never existed) is a silent no-op, never an exception: a missing card skips the lock
+     * check entirely (nothing to refuse) and falls through to
+     * {@link CardRepository#deleteByIdAndBoardId}, which itself resolves to {@code 0} rows
+     * affected.
      */
     private void handleCardDelete(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
         UUID id = parseCardId(data.get("id"));
         if (id == null) {
+            return;
+        }
+        Optional<Card> existing = cardRepository.findById(id);
+        if (existing.isPresent() && (existing.get().isLocked() || !existing.get().getBoardId().equals(boardId))) {
+            LOG.debug("Card delete refused (locked or cross-board): id={} board={}", id, boardId);
             return;
         }
         long deleted = cardRepository.deleteByIdAndBoardId(id, boardId);
@@ -649,5 +743,21 @@ public class CanvasActionService {
                 card.getId(), card.getType().name(), card.getContent(), meta,
                 card.getPosX(), card.getPosY(), card.getWidth(), card.getHeight(), card.getColor(),
                 card.getGroupId(), card.getGroupColor(), card.isLocked(), card.getLayer());
+    }
+
+    /**
+     * Flattens a {@link CardDto} into a field-named {@link Map}, for broadcasts that put the
+     * card's fields directly at the top level of {@code data} (e.g. {@code card:updated}) —
+     * as opposed to {@link #handleCardCreate}'s {@code card:created}, which nests the DTO under
+     * a {@code "card"} key. The frontend's {@code card:updated} handler ({@code board.store.ts})
+     * expects the former shape, matching {@code card:moved}/{@code card:resized}/
+     * {@code card:recolored}.
+     *
+     * @param dto the card DTO to flatten
+     * @return a map of the DTO's fields, keyed by field name
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> toFlatMap(final CardDto dto) {
+        return objectMapper.convertValue(dto, Map.class);
     }
 }
