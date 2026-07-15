@@ -119,10 +119,13 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
             @Param("layer") int layer);
 
     /**
-     * Deletes a card scoped by board ownership. Deliberately <strong>not</strong> guarded by
-     * lock state (deletion is not blocked by {@code locked} in this Socle — see EN08.4's Gate 1
-     * notes for the rationale). Idempotent: deleting an id that does not exist (already deleted,
-     * or never existed) simply returns {@code 0} — never an exception.
+     * Deletes a card scoped by board ownership. Not guarded by lock state <strong>at the query
+     * level</strong> — there is no row left to condition an {@code UPDATE}-style {@code WHERE
+     * locked = false} on once it is gone — the caller ({@link CanvasActionService#handleCardDelete})
+     * performs an explicit {@code locked} read beforehand and skips this call entirely when the
+     * card is locked (fix/EN08.4, parity with the six Sprint 12 card-type US). Idempotent:
+     * deleting an id that does not exist (already deleted, or never existed) simply returns
+     * {@code 0} — never an exception.
      *
      * @param id      the card UUID
      * @param boardId the owning board UUID

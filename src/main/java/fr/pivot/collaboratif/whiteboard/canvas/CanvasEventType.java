@@ -65,7 +65,8 @@ public enum CanvasEventType {
     CARD_UPDATE("card:update", "card:updated"),
     /** Recolors an existing {@link Card}; refused if locked (EN08.4). */
     CARD_RECOLOR("card:recolor", "card:recolored"),
-    /** Deletes an existing {@link Card}; not blocked by {@code locked} in this Socle (EN08.4). */
+    /** Deletes an existing {@link Card}; refused if locked, checked explicitly by the caller
+     * before the delete itself (EN08.4, guard added by fix/EN08.4). */
     CARD_DELETE("card:delete", "card:deleted"),
     /** Changes an existing {@link Card}'s Z-order layer; not blocked by {@code locked} (EN08.4). */
     CARD_LAYER("card:layer", "card:layered");
