@@ -1,0 +1,20 @@
+{
+  "id" : "a1a1a1a1-0000-4000-8000-000000000001",
+  "type" : "LINK",
+  "content" : "https://example.com/article",
+  "meta" : {
+    "title" : "Example Article Title",
+    "description" : "A short synthetic description used only for the EN08.5 wire contract fixture.",
+    "image" : "https://example.com/preview.png",
+    "siteName" : "Example"
+  },
+  "posX" : 120.5,
+  "posY" : 84.0,
+  "width" : 240.0,
+  "height" : 160.0,
+  "color" : "#FFEB3B",
+  "groupId" : "a1a1a1a1-0000-4000-8000-000000000002",
+  "groupColor" : "#9C27B0",
+  "locked" : false,
+  "layer" : 3
+}

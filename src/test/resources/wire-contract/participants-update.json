@@ -1,0 +1,15 @@
+{
+  "participants" : [ {
+    "userId" : "1001",
+    "displayName" : "Ada Lovelace",
+    "avatarUrl" : "https://example.com/avatar-ada.png",
+    "color" : "#E91E63",
+    "role" : "EDITOR"
+  }, {
+    "userId" : "1002",
+    "displayName" : "Grace Hopper",
+    "avatarUrl" : null,
+    "color" : "#3F51B5",
+    "role" : "VIEWER"
+  } ]
+}
