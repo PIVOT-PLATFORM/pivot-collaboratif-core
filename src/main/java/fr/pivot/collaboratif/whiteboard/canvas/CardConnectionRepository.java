@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -43,6 +44,19 @@ public interface CardConnectionRepository extends JpaRepository<CardConnection, 
             @Param("boardId") UUID boardId,
             @Param("fromId") UUID fromId,
             @Param("toId") UUID toId);
+
+    /**
+     * Returns a connector scoped by board ownership, for a partial style patch
+     * ({@code connection:update}, US08.7.2). Scoping by {@code (id, boardId)} — never {@code id}
+     * alone — means an id belonging to another board (guessed, or leaked cross-tenant) never
+     * resolves here, so the caller can treat "not found" and "found on another board" identically
+     * without leaking which case occurred.
+     *
+     * @param id      the connector UUID
+     * @param boardId the owning board UUID
+     * @return the connector if it exists and belongs to this board; empty otherwise
+     */
+    Optional<CardConnection> findByIdAndBoardId(UUID id, UUID boardId);
 
     /**
      * Deletes a connector scoped by board ownership. Idempotent: deleting an id that does not
