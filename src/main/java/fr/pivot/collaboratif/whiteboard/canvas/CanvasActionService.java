@@ -6,12 +6,14 @@ import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
+import fr.pivot.collaboratif.whiteboard.canvas.opengraph.CardContentEnrichmentRequestedEvent;
 import fr.pivot.collaboratif.whiteboard.ws.ErrorPayload;
 import fr.pivot.collaboratif.whiteboard.ws.StompPrincipal;
 import fr.pivot.collaboratif.whiteboard.ws.WhiteboardPresenceRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -91,6 +93,7 @@ public class CanvasActionService {
     private final MeterRegistry meterRegistry;
     private final WhiteboardPresenceRegistry presenceRegistry;
     private final ParticipantsBroadcastService participantsBroadcastService;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * Creates the service.
@@ -110,6 +113,10 @@ public class CanvasActionService {
      * @param participantsBroadcastService shared PARTICIPANTS_UPDATE broadcaster, also used by
      *                                     {@link WhiteboardPresenceRegistry} on disconnect
      *                                     cleanup — single source of truth for this topic
+     * @param eventPublisher                Spring event bus — used to request an asynchronous
+     *                                       OpenGraph enrichment pass after a LINK/TEXT/LABEL
+     *                                       card is created or updated (US08.6.5); see {@link
+     *                                       CardContentEnrichmentRequestedEvent}
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -121,7 +128,8 @@ public class CanvasActionService {
             final ObjectMapper objectMapper,
             final MeterRegistry meterRegistry,
             final WhiteboardPresenceRegistry presenceRegistry,
-            final ParticipantsBroadcastService participantsBroadcastService) {
+            final ParticipantsBroadcastService participantsBroadcastService,
+            final ApplicationEventPublisher eventPublisher) {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
         this.cardRepository = cardRepository;
@@ -132,6 +140,7 @@ public class CanvasActionService {
         this.meterRegistry = meterRegistry;
         this.presenceRegistry = presenceRegistry;
         this.participantsBroadcastService = participantsBroadcastService;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -363,6 +372,11 @@ public class CanvasActionService {
             broadcastData.put("clientTag", data.get("clientTag"));
         }
         broadcast(boardId, principal, CanvasEventType.CARD_CREATE, broadcastData);
+        // US08.6.5 hand-off: request an async OpenGraph enrichment pass. CardUrlExtractor
+        // decides internally whether `type`/`content` are eligible (LINK, or TEXT/LABEL with a
+        // detected URL) — a no-op for every other card type.
+        eventPublisher.publishEvent(
+                new CardContentEnrichmentRequestedEvent(card.getId(), boardId, principal.tenantId(), type, content));
         LOG.debug("Card created: id={} board={} type={}", card.getId(), boardId, type);
     }
 
@@ -489,6 +503,12 @@ public class CanvasActionService {
             return;
         }
         broadcast(boardId, principal, CanvasEventType.CARD_UPDATE, toFlatMap(toDto(card)));
+        // US08.6.5 hand-off (see handleCardCreate) — content just changed, so re-run enrichment:
+        // either a new/changed URL gets (re-)fetched, or its removal clears a previous preview.
+        // Reuses the `card` just re-read above rather than a second lookup.
+        eventPublisher.publishEvent(
+                new CardContentEnrichmentRequestedEvent(
+                        id, boardId, principal.tenantId(), card.getType(), content));
     }
 
     /**

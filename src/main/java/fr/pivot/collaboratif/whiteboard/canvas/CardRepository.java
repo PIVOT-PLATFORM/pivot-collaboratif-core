@@ -85,6 +85,29 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
             @Param("content") String content);
 
     /**
+     * Updates a card's OpenGraph metadata cache (US08.6.5), guarded by board ownership but
+     * <strong>not</strong> by {@code locked} — enrichment is a system-triggered background
+     * refresh of the preview cache, not a user-authored mutation, so a locked card's preview
+     * still updates. Returns the affected row count so the caller ({@code
+     * OpenGraphEnrichmentListener}) can silently skip the {@code card:meta_updated} broadcast if
+     * the card was deleted (or moved to a different board) before the asynchronous fetch
+     * completed.
+     *
+     * @param id      the card UUID
+     * @param boardId the owning board UUID (defence in depth against a cross-board id)
+     * @param meta    the new JSON metadata cache ({@code {title, description, image, siteName}}),
+     *                or {@code null} to clear it
+     * @return the number of rows affected (0 if not found or on a different board)
+     */
+    @Modifying
+    @Query("UPDATE Card c SET c.meta = :meta, c.updatedAt = CURRENT_TIMESTAMP "
+            + "WHERE c.id = :id AND c.boardId = :boardId")
+    int updateMeta(
+            @Param("id") UUID id,
+            @Param("boardId") UUID boardId,
+            @Param("meta") String meta);
+
+    /**
      * Recolors a card, guarded by lock state and board ownership in the same query.
      *
      * @param id      the card UUID
