@@ -78,7 +78,21 @@ public enum CanvasEventType {
     CONNECTION_DELETE("connection:delete", "connection:deleted"),
     /** Applies a partial style patch to an existing {@link CardConnection} — only the fields
      * present in the incoming payload are mutated (US08.7.2). */
-    CONNECTION_UPDATE("connection:update", "connection:updated");
+    CONNECTION_UPDATE("connection:update", "connection:updated"),
+    /** Starts (or restarts) the board's shared facilitation timer. Inbound {@code timer:start}
+     * carries {@code {duration}} (seconds); the server computes {@code endsAt} and broadcasts
+     * {@code timer:started {endsAt, serverNow}} room-wide. EDITOR/OWNER only. Ephemeral (Redis,
+     * {@link BoardTimerStore}) — never persisted. */
+    TIMER_START("timer:start", "timer:started"),
+    /** Stops the board's shared facilitation timer, broadcasting {@code timer:stopped}
+     * room-wide. EDITOR/OWNER only. */
+    TIMER_STOP("timer:stop", "timer:stopped"),
+    /** Client-triggered destructive board reset: deletes every card and connector of the board,
+     * then broadcasts {@code board:resetted} room-wide (OWNER only). Distinct from the legacy
+     * server-emitted {@link #RESET} (bare enum name, DRAW-events reset driven by the REST
+     * endpoint) — this one is a genuine inbound STOMP action the frontend
+     * ({@code board.store.ts}) emits as {@code board:reset}. */
+    BOARD_RESET("board:reset", "board:resetted");
 
     private static final Map<String, CanvasEventType> BY_WIRE_IN = Stream.of(values())
             .collect(Collectors.toMap(t -> t.wireIn.toLowerCase(Locale.ROOT), t -> t));

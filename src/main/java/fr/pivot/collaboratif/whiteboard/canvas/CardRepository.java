@@ -194,4 +194,18 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
      * @return the number of rows deleted (0 or 1)
      */
     long deleteByIdAndBoardId(UUID id, UUID boardId);
+
+    /**
+     * Deletes every card of a board, scoped by tenant (defence-in-depth cross-tenant guard).
+     * Backs the destructive {@code board:reset} STOMP action
+     * ({@link CanvasActionService#handleBoardReset}) — the OWNER-only, atomic "clear the whole
+     * board" operation mirroring the reference whiteboard's reset.
+     *
+     * @param boardId  the owning board UUID
+     * @param tenantId the owning tenant's {@code public.tenants.id}
+     * @return the number of rows deleted
+     */
+    @Modifying
+    @Query("DELETE FROM Card c WHERE c.boardId = :boardId AND c.tenantId = :tenantId")
+    long deleteAllByBoardIdAndTenantId(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
 }
