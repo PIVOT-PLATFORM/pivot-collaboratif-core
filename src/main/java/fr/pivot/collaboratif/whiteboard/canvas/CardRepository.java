@@ -85,12 +85,20 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
     /**
      * Updates a card's content, guarded by lock state and board ownership in the same query.
      *
+     * <p>{@code clearAutomatically = true}: {@code handleCardUpdate} re-reads the card via
+     * {@code findById} right after this bulk update to broadcast the full card DTO, and
+     * (US08.6.3) may have already loaded the same entity into the persistence context via
+     * {@code isShapeCard}'s lookup <em>before</em> this query runs. A bulk JPQL
+     * {@code UPDATE} bypasses the first-level cache by design, so without clearing it the
+     * subsequent {@code findById} would return the pre-update, now-stale managed instance
+     * instead of hitting the database again.
+     *
      * @param id      the card UUID
      * @param boardId the owning board UUID
      * @param content the new content
      * @return the number of rows affected (0 if not found, on a different board, or locked)
      */
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("UPDATE Card c SET c.content = :content, c.updatedAt = CURRENT_TIMESTAMP "
             + "WHERE c.id = :id AND c.boardId = :boardId AND c.locked = false")
     int updateContentIfUnlocked(
