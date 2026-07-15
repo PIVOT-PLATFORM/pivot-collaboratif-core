@@ -33,8 +33,8 @@ import java.util.stream.Stream;
  *   <li>{@link #CARD_CREATE}, {@link #CARD_MOVE}, {@link #CARD_RESIZE}, {@link #CARD_UPDATE},
  *       {@link #CARD_RECOLOR}, {@link #CARD_DELETE}, {@link #CARD_LAYER} — mutate the durable
  *       {@link Card} table (EN08.4).</li>
- *   <li>{@link #CONNECTION_CREATE}, {@link #CONNECTION_DELETE} — mutate the durable
- *       {@link CardConnection} table (US08.7.1).</li>
+ *   <li>{@link #CONNECTION_CREATE}, {@link #CONNECTION_DELETE}, {@link #CONNECTION_UPDATE} —
+ *       mutate the durable {@link CardConnection} table (US08.7.1, US08.7.2).</li>
  *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO}, {@link #RESET} —
  *       ephemeral, broadcast only, never persisted.</li>
  * </ul>
@@ -75,7 +75,10 @@ public enum CanvasEventType {
     /** Creates a new {@link CardConnection} linking two {@link Card}s (US08.7.1). */
     CONNECTION_CREATE("connection:create", "connection:created"),
     /** Deletes an existing {@link CardConnection}; tolerant of an already-cascaded id (US08.7.1). */
-    CONNECTION_DELETE("connection:delete", "connection:deleted");
+    CONNECTION_DELETE("connection:delete", "connection:deleted"),
+    /** Applies a partial style patch to an existing {@link CardConnection} — only the fields
+     * present in the incoming payload are mutated (US08.7.2). */
+    CONNECTION_UPDATE("connection:update", "connection:updated");
 
     private static final Map<String, CanvasEventType> BY_WIRE_IN = Stream.of(values())
             .collect(Collectors.toMap(t -> t.wireIn.toLowerCase(Locale.ROOT), t -> t));

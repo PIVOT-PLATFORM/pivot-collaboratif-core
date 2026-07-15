@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -84,6 +85,22 @@ public class CanvasActionService {
 
     /** Micrometer counter name for throttled canvas messages (declared in US08.3.1). */
     static final String THROTTLED_COUNTER = "messages.throttled.total";
+
+    /**
+     * Finite, whitelisted set of connector line shapes accepted by
+     * {@link #handleConnectionUpdate} — English wire values matching {@link CardConnection}'s
+     * own creation-time default ({@code curved}, US08.7.1). A {@code shape} outside this set is
+     * rejected for that field alone (US08.7.2, AC5).
+     */
+    static final Set<String> ALLOWED_CONNECTION_SHAPES = Set.of("straight", "curved", "orthogonal");
+
+    /**
+     * Finite, whitelisted set of connector arrowhead styles accepted by
+     * {@link #handleConnectionUpdate} — English wire values matching {@link CardConnection}'s
+     * own creation-time default ({@code none}, US08.7.1). An {@code arrow} outside this set is
+     * rejected for that field alone (US08.7.2, AC5).
+     */
+    static final Set<String> ALLOWED_CONNECTION_ARROWS = Set.of("none", "start", "end", "both");
 
     private final SimpMessagingTemplate messagingTemplate;
     private final CanvasEventRepository canvasEventRepository;
@@ -227,6 +244,7 @@ public class CanvasActionService {
             case CARD_LAYER -> handleCardLayer(boardId, message, principal);
             case CONNECTION_CREATE -> handleConnectionCreate(boardId, message, principal);
             case CONNECTION_DELETE -> handleConnectionDelete(boardId, message, principal);
+            case CONNECTION_UPDATE -> handleConnectionUpdate(boardId, message, principal);
             // RESET is server-emitted only (US08.2.4, via the REST reset endpoint) — a client
             // must never be able to trigger a canvas reset over STOMP, so an inbound RESET
             // frame is silently dropped here (same policy as an unknown type).
@@ -248,7 +266,7 @@ public class CanvasActionService {
     private boolean requiresCanWrite(final CanvasEventType eventType) {
         return switch (eventType) {
             case CARD_CREATE, CARD_MOVE, CARD_RESIZE, CARD_UPDATE, CARD_RECOLOR, CARD_DELETE, CARD_LAYER,
-                    CONNECTION_CREATE, CONNECTION_DELETE -> true;
+                    CONNECTION_CREATE, CONNECTION_DELETE, CONNECTION_UPDATE -> true;
             default -> false;
         };
     }
@@ -744,6 +762,133 @@ public class CanvasActionService {
             return;
         }
         broadcast(boardId, principal, CanvasEventType.CONNECTION_DELETE, Map.of("id", id.toString()));
+    }
+
+    /**
+     * Handles a CONNECTION_UPDATE action: applies a partial style patch to an existing
+     * {@link CardConnection} and broadcasts the full updated connector to the whole room,
+     * emitter included (US08.7.2).
+     *
+     * <p><strong>Presence vs. absence.</strong> Only the style keys actually present in the
+     * incoming {@code data} map are considered — tested with {@link Map#containsKey}, never a
+     * null-check on the retrieved value — so an absent key preserves the currently persisted
+     * value while a present key carrying an explicit {@code null} clears it (parity spec
+     * §1.8/§3.6). Only meaningful for {@code label}/{@code color} — the two nullable columns on
+     * {@link CardConnection}; {@code shape}/{@code arrow}/{@code dashed}/{@code width} are all
+     * {@code NOT NULL} columns, so an explicit {@code null} for one of those simply fails its
+     * own type/whitelist check below and is skipped like any other invalid value, never
+     * persisted as {@code null}.
+     *
+     * <p><strong>Field-level validation, not whole-patch rejection.</strong> {@code shape} and
+     * {@code arrow} are checked against the finite applicative whitelists
+     * {@link #ALLOWED_CONNECTION_SHAPES}/{@link #ALLOWED_CONNECTION_ARROWS} (English wire values
+     * matching {@link CardConnection}'s own creation-time defaults, US08.7.1); {@code label}/
+     * {@code color}/{@code dashed}/{@code width} are checked against their expected JSON type.
+     * A present key whose value fails its check is simply skipped — the offending field is left
+     * at its previous value — rather than aborting the whole patch or throwing, consistent with
+     * every other tolerant {@code CARD_*}/{@code CONNECTION_*} handler in this class.
+     *
+     * <p><strong>No-op cases</strong> (silent — no database write, no broadcast, no exception,
+     * no dedicated STOMP error frame):
+     * <ul>
+     *   <li>{@code id} missing or unparsable.</li>
+     *   <li>{@code id} does not resolve to a connector of this board — unknown, already deleted,
+     *       already cascaded away by an endpoint card's deletion, or belonging to another board
+     *       (guessed or leaked cross-tenant id): {@link CardConnectionRepository#findByIdAndBoardId}
+     *       scopes the lookup by {@code (id, boardId)}, so none of these leak whether the id
+     *       exists elsewhere.</li>
+     *   <li>No style key present in {@code data} beyond {@code id}/{@code boardId}, or every
+     *       present style key was rejected by validation — nothing left to persist or
+     *       broadcast.</li>
+     * </ul>
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CONNECTION_UPDATE action
+     * @param principal the emitting principal
+     */
+    private void handleConnectionUpdate(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        Optional<CardConnection> existing = cardConnectionRepository.findByIdAndBoardId(id, boardId);
+        if (existing.isEmpty()) {
+            LOG.debug("Connection update no-op (missing or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        CardConnection connection = existing.get();
+        boolean mutated = applyConnectionPatch(connection, data);
+        if (!mutated) {
+            LOG.debug("Connection update no-op (empty or fully-rejected patch): id={} board={}", id, boardId);
+            return;
+        }
+        cardConnectionRepository.save(connection);
+        broadcast(boardId, principal, CanvasEventType.CONNECTION_UPDATE, Map.of("connection", toDto(connection)));
+        LOG.debug("Connection updated: id={} board={}", id, boardId);
+    }
+
+    /**
+     * Applies the style keys present in {@code data} onto {@code connection}, field by field —
+     * see {@link #handleConnectionUpdate}'s Javadoc for the presence/absence and field-level
+     * validation rules this implements.
+     *
+     * @param connection the connector to mutate in place (not yet persisted by this method)
+     * @param data       the incoming action's field-accessible payload
+     * @return {@code true} if at least one field was actually applied
+     */
+    private boolean applyConnectionPatch(final CardConnection connection, final Map<String, Object> data) {
+        boolean mutated = false;
+        if (data.containsKey("label")) {
+            Object value = data.get("label");
+            if (value == null || value instanceof String) {
+                connection.setLabel((String) value);
+                mutated = true;
+            }
+        }
+        if (data.containsKey("color")) {
+            Object value = data.get("color");
+            if (value == null || value instanceof String) {
+                connection.setColor((String) value);
+                mutated = true;
+            }
+        }
+        if (data.containsKey("shape")) {
+            Object value = data.get("shape");
+            if (value instanceof String s && ALLOWED_CONNECTION_SHAPES.contains(s)) {
+                connection.setShape(s);
+                mutated = true;
+            } else {
+                LOG.debug("Connection update: shape value rejected — connectionId={} value={}",
+                        connection.getId(), value);
+            }
+        }
+        if (data.containsKey("arrow")) {
+            Object value = data.get("arrow");
+            if (value instanceof String s && ALLOWED_CONNECTION_ARROWS.contains(s)) {
+                connection.setArrow(s);
+                mutated = true;
+            } else {
+                LOG.debug("Connection update: arrow value rejected — connectionId={} value={}",
+                        connection.getId(), value);
+            }
+        }
+        if (data.containsKey("dashed")) {
+            Object value = data.get("dashed");
+            if (value instanceof Boolean b) {
+                connection.setDashed(b);
+                mutated = true;
+            }
+        }
+        if (data.containsKey("width")) {
+            Object value = data.get("width");
+            if (value instanceof Number n) {
+                connection.setWidth(n.intValue());
+                mutated = true;
+            }
+        }
+        return mutated;
     }
 
     // -------------------------------------------------------------------------
