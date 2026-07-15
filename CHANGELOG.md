@@ -1,3 +1,23 @@
+# [0.4.0](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.3.0...v0.4.0) (2026-07-15)
+
+
+### Bug Fixes
+
+* **whiteboard:** EN08.4 — garde locked sur card:delete + exclusion émetteur move/resize ([#79](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/79)) ([aa88b1f](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/aa88b1f394ae2d54a326a5f956653cae9c936ae3))
+
+
+### Features
+
+* **whiteboard:** tableau (TABLE) + collage tableur — sanitisation (US08.6.6) ([#75](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/75)) ([257ddb4](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/257ddb49704380e4f15c124808088a6647133857))
+* **whiteboard:** US08.1.9 — chargement d'un tableau & présence agrégée ([#76](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/76)) ([d0f96e1](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/d0f96e174df98c0c9cc7b707d5c13dd2cfa2e7eb))
+* **whiteboard:** US08.6.1 — TEXT card OpenGraph enrichment (absorbed into [#78](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/78)) ([#77](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/77)) ([9a449e3](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/9a449e3b173397e43fee989e1fbe31d796c64a22))
+* **whiteboard:** US08.6.2 — carte Étiquette (LABEL) ([#74](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/74)) ([7442528](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/7442528c7e9467e157e9f79749d8a0075071085c))
+* **whiteboard:** US08.6.3 — Forme (SHAPE) ([#73](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/73)) ([4765e8a](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/4765e8a76bb0c02f38d62c0a2f623c79042a02db))
+* **whiteboard:** US08.6.4 — carte Image (validation serveur MIME/taille) ([#80](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/80)) ([97b64f0](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/97b64f069a1591ab6956eb19b0a23656b288d71c))
+* **whiteboard:** US08.6.5 — carte lien (LINK) + aperçu OpenGraph ([#78](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/78)) ([752fe42](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/752fe427f188a57457a9a108701e00b7475fd8dd))
+* **whiteboard:** US08.7.1 — créer / supprimer un connecteur (STOMP) ([#81](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/81)) ([de71032](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/de7103212a6fe98946c50c1d2511a266f3cd6639))
+* **whiteboard:** US08.7.2 — styler un connecteur (STOMP) ([#82](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/issues/82)) ([2533937](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/commit/253393713a971d6c1cd436837874c7f592800964))
+
 # [0.3.0](https://github.com/PIVOT-PLATFORM/pivot-collaboratif-core/compare/v0.2.1...v0.3.0) (2026-07-14)
 
 
