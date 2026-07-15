@@ -38,6 +38,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -272,8 +273,8 @@ class WhiteboardLinkSsrfIT {
                         "data", Map.of("id", card.getId().toString(), "content", "no more link here")));
 
         BroadcastCanvasMessage msg = metaUpdated.get(5, TimeUnit.SECONDS);
-        assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
-        assertThat(msg.data().get("meta")).isNull();
+        assertThat(map(msg).get("id")).isEqualTo(card.getId().toString());
+        assertThat(map(msg).get("meta")).isNull();
 
         Card reloaded = cardRepository.findById(card.getId()).orElseThrow();
         assertThat(reloaded.getMeta()).isNull();

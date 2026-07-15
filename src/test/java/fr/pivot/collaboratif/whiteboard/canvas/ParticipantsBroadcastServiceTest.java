@@ -1,7 +1,9 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
+import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantsUpdatePayload;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.PresenceUserDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -78,5 +80,29 @@ class ParticipantsBroadcastServiceTest {
         verify(messagingTemplate).convertAndSend(
                 eq("/topic/whiteboard/" + BOARD_ID + "/presence"), (Object) payloadCaptor.capture());
         assertThat(payloadCaptor.getValue().participants()).isEmpty();
+    }
+
+    /**
+     * Given a board with a participant stored,
+     * when broadcast() is called,
+     * then a {@code board:presence} {@link BroadcastCanvasMessage} carrying the
+     * {@link PresenceUserDto} projection ({@code id}/{@code name}/{@code avatar}) is also sent to
+     * the board's <strong>main</strong> topic — the shape the frontend's
+     * {@code this.on<PresenceUser[]>('board:presence', …)} handler consumes (P4).
+     */
+    @Test
+    void broadcast_also_sends_board_presence_projection_to_main_topic() {
+        String userId = UUID.randomUUID().toString();
+        ParticipantInfo alice = new ParticipantInfo(userId, "Alice", "http://x/a.png", "#E91E63", "OWNER");
+        when(participantMetaStore.getAll(TENANT_ID, BOARD_ID)).thenReturn(List.of(alice));
+
+        broadcastService.broadcast(TENANT_ID, BOARD_ID);
+
+        ArgumentCaptor<BroadcastCanvasMessage> msgCaptor = ArgumentCaptor.forClass(BroadcastCanvasMessage.class);
+        verify(messagingTemplate).convertAndSend(
+                eq("/topic/whiteboard/" + BOARD_ID), (Object) msgCaptor.capture());
+        BroadcastCanvasMessage msg = msgCaptor.getValue();
+        assertThat(msg.type()).isEqualTo("board:presence");
+        assertThat(msg.data()).isEqualTo(List.of(new PresenceUserDto(userId, "Alice", "http://x/a.png")));
     }
 }
