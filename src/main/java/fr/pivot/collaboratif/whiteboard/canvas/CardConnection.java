@@ -20,9 +20,10 @@ import java.util.UUID;
  *
  * <p>Default field values ({@code shape} = {@code curved}, {@code arrow} = {@code none},
  * {@code dashed} = {@code false}, {@code width} = 2, {@code label}/{@code color} = {@code null})
- * match the reference whiteboard's connector defaults exactly (parity spec §7) and are fixed —
- * not user-selectable at creation time; styling is a separate mutation (US08.7.2,
- * {@code connection:update}, out of scope here).
+ * match the reference whiteboard's connector defaults exactly (parity spec §7) and are fixed at
+ * creation time — not user-selectable there; styling is a separate partial-patch mutation
+ * ({@code connection:update}, US08.7.2, see
+ * {@link fr.pivot.collaboratif.whiteboard.canvas.CanvasActionService#handleConnectionUpdate}).
  *
  * <p>{@code fromId}/{@code toId} reference {@link Card} rows with {@code ON DELETE CASCADE} —
  * deleting either endpoint card removes this connector automatically, so
@@ -226,5 +227,63 @@ public class CardConnection {
      */
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    /**
+     * Sets the connector label (US08.7.2, {@code connection:update}).
+     *
+     * @param label the new label, or {@code null} to clear it
+     */
+    public void setLabel(final String label) {
+        this.label = label;
+    }
+
+    /**
+     * Sets the connector colour (US08.7.2, {@code connection:update}).
+     *
+     * @param color the new hex colour, or {@code null} to clear it
+     */
+    public void setColor(final String color) {
+        this.color = color;
+    }
+
+    /**
+     * Sets the connector line shape (US08.7.2, {@code connection:update}). Callers must
+     * validate the value against the applicative whitelist before calling this setter — see
+     * {@link fr.pivot.collaboratif.whiteboard.canvas.CanvasActionService#handleConnectionUpdate}.
+     *
+     * @param shape the new shape
+     */
+    public void setShape(final String shape) {
+        this.shape = shape;
+    }
+
+    /**
+     * Sets the connector arrowhead style (US08.7.2, {@code connection:update}). Callers must
+     * validate the value against the applicative whitelist before calling this setter — see
+     * {@link fr.pivot.collaboratif.whiteboard.canvas.CanvasActionService#handleConnectionUpdate}.
+     *
+     * @param arrow the new arrowhead style
+     */
+    public void setArrow(final String arrow) {
+        this.arrow = arrow;
+    }
+
+    /**
+     * Sets whether the connector line is dashed (US08.7.2, {@code connection:update}).
+     *
+     * @param dashed the new dashed flag
+     */
+    public void setDashed(final boolean dashed) {
+        this.dashed = dashed;
+    }
+
+    /**
+     * Sets the connector line stroke width (US08.7.2, {@code connection:update}).
+     *
+     * @param width the new stroke width
+     */
+    public void setWidth(final int width) {
+        this.width = width;
     }
 }
