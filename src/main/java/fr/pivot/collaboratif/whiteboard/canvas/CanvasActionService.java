@@ -510,11 +510,21 @@ public class CanvasActionService {
 
     /**
      * Handles a CARD_UPDATE action: updates a card's content if it exists, belongs to this
-     * board, and is not locked; refused silently otherwise. When the targeted card is a
-     * {@link CardType#SHAPE}, the incoming {@code content} is sanitised by
-     * {@link ShapeStyleSanitizer} before persistence, same as at creation (US08.6.3, correctif
-     * §6.4) — this pre-read does not weaken the atomic {@code locked}/board-ownership guard on
-     * the mutation query itself ({@link CardRepository#updateContentIfUnlocked}).
+     * board, and is not locked; refused silently otherwise. The card's persisted type is
+     * looked up once before the atomic guarded write, and used to dispatch type-specific
+     * content handling:
+     * <ul>
+     *   <li>{@link CardType#SHAPE}: {@code content} is sanitised by
+     *       {@link ShapeStyleSanitizer}, same as at creation (US08.6.3, correctif §6.4).</li>
+     *   <li>{@link CardType#IMAGE} (US08.6.4 Gate 4 hardening): {@code content} is passed
+     *       through {@link ImageCardContentValidator#sanitize} — otherwise a raw STOMP client
+     *       could bypass the UI's upload flow entirely and persist an unvalidated value
+     *       (including an external URL) directly onto an existing IMAGE card, which is later
+     *       rendered as an image {@code src}. Mirrors the guard already applied in
+     *       {@link #handleCardCreate}. An invalid image content refuses the whole update.</li>
+     * </ul>
+     * This pre-read does not weaken the atomic {@code locked}/board-ownership guard on the
+     * mutation query itself ({@link CardRepository#updateContentIfUnlocked}).
      *
      * <p>Broadcasts the full updated {@link CardDto} (re-read after the update), not just
      * {@code {id, content}} — matching {@code card:created}/{@code card:moved}/
@@ -530,8 +540,17 @@ public class CanvasActionService {
             return;
         }
         String content = (String) data.getOrDefault("content", "");
-        if (isShapeCard(id, boardId)) {
+        CardType type = cardRepository.findTypeByIdAndBoardId(id, boardId).orElse(null);
+        if (type == CardType.SHAPE) {
             content = shapeStyleSanitizer.sanitize(content);
+        } else if (type == CardType.IMAGE) {
+            Optional<String> sanitizedContent = imageCardContentValidator.sanitize(content);
+            if (sanitizedContent.isEmpty()) {
+                LOG.warn("Card update refused: invalid IMAGE content — id={} board={} user={}",
+                        id, boardId, principal.userId());
+                return;
+            }
+            content = sanitizedContent.get();
         }
         int updated = cardRepository.updateContentIfUnlocked(id, boardId, content);
         if (updated == 0) {
@@ -553,21 +572,6 @@ public class CanvasActionService {
         eventPublisher.publishEvent(
                 new CardContentEnrichmentRequestedEvent(
                         id, boardId, principal.tenantId(), card.getType(), content));
-    }
-
-    /**
-     * Returns whether the given card id, scoped to this board, is currently a
-     * {@link CardType#SHAPE} — used only to decide whether {@code CARD_UPDATE}'s content needs
-     * shape-style sanitisation before persistence (US08.6.3).
-     *
-     * @param id      the card UUID
-     * @param boardId the owning board UUID
-     * @return {@code true} if the card exists, belongs to this board, and is a SHAPE
-     */
-    private boolean isShapeCard(final UUID id, final UUID boardId) {
-        return cardRepository.findByIdAndBoardId(id, boardId)
-                .map(c -> c.getType() == CardType.SHAPE)
-                .orElse(false);
     }
 
     /**

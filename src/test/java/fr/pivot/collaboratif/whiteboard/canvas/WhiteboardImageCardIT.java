@@ -209,6 +209,63 @@ class WhiteboardImageCardIT {
     }
 
     // =========================================================================
+    // AC Security — CARD_UPDATE on an existing IMAGE card is validated server-side too,
+    // not just CARD_CREATE (Gate 4 finding: a raw STOMP client could otherwise bypass the
+    // upload flow entirely and persist an unvalidated/external URL onto an IMAGE card).
+    // =========================================================================
+
+    @Test
+    void card_update_with_invalid_image_content_on_an_image_card_is_refused_silently() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card image = seedImageCard(board.getId(), tenantId, false);
+
+        StompSession session = connectAs(token);
+        session.subscribe("/topic/whiteboard/" + board.getId(), noOpHandler());
+        Thread.sleep(100);
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "card:update",
+                        "data", Map.of("id", image.getId().toString(),
+                                "content", "http://attacker.example/payload.png")));
+
+        Thread.sleep(300);
+        Card reloaded = cardRepository.findById(image.getId()).orElseThrow();
+        assertThat(reloaded.getContent()).isEqualTo(VALID_PNG_DATA_URL);
+        assertThat(session.isConnected()).isTrue();
+    }
+
+    @Test
+    void card_update_with_valid_image_content_on_an_image_card_persists_sanitized_and_broadcasts() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card image = seedImageCard(board.getId(), tenantId, false);
+
+        String otherValidPng = "data:image/png;base64," + Base64.getEncoder().encodeToString(
+                new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x09, 0x08, 0x07, 0x06});
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "card:update",
+                        "data", Map.of("id", image.getId().toString(), "content", otherValidPng)));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("card:updated");
+        assertThat((String) msg.data().get("content")).startsWith("data:image/png;base64,");
+
+        Card reloaded = cardRepository.findById(image.getId()).orElseThrow();
+        assertThat(reloaded.getContent()).startsWith("data:image/png;base64,");
+    }
+
+    // =========================================================================
     // AC Security — a VIEWER cannot create an IMAGE card
     // =========================================================================
 

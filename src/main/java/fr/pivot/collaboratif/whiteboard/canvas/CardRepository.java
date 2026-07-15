@@ -34,19 +34,6 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
     List<Card> findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(UUID boardId, Long tenantId);
 
     /**
-     * Returns a card scoped by board ownership, without any lock guard — used to read
-     * type-specific state (e.g. determining whether a {@code CARD_UPDATE}'s incoming
-     * {@code content} needs {@link CardType#SHAPE} style sanitisation, US08.6.3) before the
-     * guarded mutation itself runs. Never used to bypass the {@code locked}/board-ownership
-     * guard on the mutation query itself.
-     *
-     * @param id      the card UUID
-     * @param boardId the owning board UUID (defence in depth against a cross-board id)
-     * @return the card if found and on this board; empty otherwise
-     */
-    Optional<Card> findByIdAndBoardId(UUID id, UUID boardId);
-
-    /**
      * Moves a card, guarded by lock state and board ownership in the same query.
      *
      * @param id    the card UUID
@@ -86,12 +73,14 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
      * Updates a card's content, guarded by lock state and board ownership in the same query.
      *
      * <p>{@code clearAutomatically = true}: {@code handleCardUpdate} re-reads the card via
-     * {@code findById} right after this bulk update to broadcast the full card DTO, and
-     * (US08.6.3) may have already loaded the same entity into the persistence context via
-     * {@code isShapeCard}'s lookup <em>before</em> this query runs. A bulk JPQL
-     * {@code UPDATE} bypasses the first-level cache by design, so without clearing it the
-     * subsequent {@code findById} would return the pre-update, now-stale managed instance
-     * instead of hitting the database again.
+     * {@code findById} right after this bulk update to broadcast the full card DTO. A bulk
+     * JPQL {@code UPDATE} bypasses the first-level cache by design, so without clearing it, any
+     * managed {@code Card} instance already sitting in the persistence context from an earlier
+     * read in the same transaction (e.g. a prior type lookup) would make the subsequent
+     * {@code findById} return that pre-update, now-stale instance instead of hitting the
+     * database again — reproduced as a real bug (US08.6.3 IT failures) when a full-entity
+     * lookup preceded this query; kept defensively even though the current callers only use
+     * the lighter {@link #findTypeByIdAndBoardId} projection beforehand.
      *
      * @param id      the card UUID
      * @param boardId the owning board UUID
@@ -128,6 +117,20 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
             @Param("id") UUID id,
             @Param("boardId") UUID boardId,
             @Param("meta") String meta);
+
+    /**
+     * Returns a card's type scoped by board, without loading the full entity — used to dispatch
+     * type-specific content validation ({@link ShapeStyleSanitizer}, {@link
+     * ImageCardContentValidator}) before a {@code CARD_UPDATE} write. A card's {@code type} is
+     * immutable after creation, so this read carries no race window against the atomic
+     * {@link #updateContentIfUnlocked} write that follows it.
+     *
+     * @param id      the card UUID
+     * @param boardId the owning board UUID
+     * @return the card's type, empty if not found or on a different board
+     */
+    @Query("SELECT c.type FROM Card c WHERE c.id = :id AND c.boardId = :boardId")
+    Optional<CardType> findTypeByIdAndBoardId(@Param("id") UUID id, @Param("boardId") UUID boardId);
 
     /**
      * Recolors a card, guarded by lock state and board ownership in the same query.
