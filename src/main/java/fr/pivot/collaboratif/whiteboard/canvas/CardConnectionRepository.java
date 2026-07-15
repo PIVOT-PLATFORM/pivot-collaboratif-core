@@ -1,0 +1,58 @@
+package fr.pivot.collaboratif.whiteboard.canvas;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Spring Data JPA repository for {@link CardConnection} entities (US08.7.1).
+ *
+ * <p>Every mutating query scopes explicitly by both {@code id} <strong>and</strong>
+ * {@code boardId} — never {@code id} alone — consistent with {@link CardRepository}'s
+ * defence-in-depth convention against a cross-board id (guessed or leaked cross-tenant).
+ */
+public interface CardConnectionRepository extends JpaRepository<CardConnection, UUID> {
+
+    /**
+     * Returns every connector on the given board, for the board-state reply sent to a client
+     * on {@code JOIN}.
+     *
+     * @param boardId  the board UUID
+     * @param tenantId the tenant's {@code public.tenants.id} (tenant isolation)
+     * @return the board's connectors; empty if none exist
+     */
+    List<CardConnection> findAllByBoardIdAndTenantId(UUID boardId, Long tenantId);
+
+    /**
+     * Returns whether a connector already exists between the given pair of cards on this
+     * board, in either direction — the bidirectional anti-duplicate check (parity spec §3.6):
+     * a connector {@code (fromId, toId)} is considered a duplicate of one already stored as
+     * either {@code (fromId, toId)} or {@code (toId, fromId)}.
+     *
+     * @param boardId the owning board UUID
+     * @param fromId  one endpoint card id
+     * @param toId    the other endpoint card id
+     * @return {@code true} if a connector already links this pair in either direction
+     */
+    @Query("SELECT COUNT(c) > 0 FROM CardConnection c WHERE c.boardId = :boardId "
+            + "AND ((c.fromId = :fromId AND c.toId = :toId) OR (c.fromId = :toId AND c.toId = :fromId))")
+    boolean existsBetween(
+            @Param("boardId") UUID boardId,
+            @Param("fromId") UUID fromId,
+            @Param("toId") UUID toId);
+
+    /**
+     * Deletes a connector scoped by board ownership. Idempotent: deleting an id that does not
+     * exist (already deleted — including via the {@code ON DELETE CASCADE} triggered by an
+     * endpoint card's own deletion — or never existed) simply returns {@code 0}, never an
+     * exception.
+     *
+     * @param id      the connector UUID
+     * @param boardId the owning board UUID
+     * @return the number of rows deleted (0 or 1)
+     */
+    long deleteByIdAndBoardId(UUID id, UUID boardId);
+}

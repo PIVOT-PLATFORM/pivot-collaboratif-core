@@ -4,6 +4,7 @@ import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRole;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.CardConnectionDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
 import fr.pivot.collaboratif.whiteboard.canvas.opengraph.CardContentEnrichmentRequestedEvent;
@@ -87,6 +88,7 @@ public class CanvasActionService {
     private final SimpMessagingTemplate messagingTemplate;
     private final CanvasEventRepository canvasEventRepository;
     private final CardRepository cardRepository;
+    private final CardConnectionRepository cardConnectionRepository;
     private final ColorPaletteService colorPaletteService;
     private final ParticipantMetaStore participantMetaStore;
     private final BoardMemberRepository boardMemberRepository;
@@ -105,6 +107,8 @@ public class CanvasActionService {
      * @param messagingTemplate            STOMP broadcast template
      * @param canvasEventRepository        JPA repository for DRAW persistence
      * @param cardRepository               JPA repository for durable {@link Card} state (EN08.4)
+     * @param cardConnectionRepository     JPA repository for durable {@link CardConnection}
+     *                                     state (US08.7.1)
      * @param colorPaletteService          deterministic colour assignment
      * @param participantMetaStore         Redis store for participant metadata
      * @param boardMemberRepository        JPA repository for role lookups
@@ -135,6 +139,7 @@ public class CanvasActionService {
             final SimpMessagingTemplate messagingTemplate,
             final CanvasEventRepository canvasEventRepository,
             final CardRepository cardRepository,
+            final CardConnectionRepository cardConnectionRepository,
             final ColorPaletteService colorPaletteService,
             final ParticipantMetaStore participantMetaStore,
             final BoardMemberRepository boardMemberRepository,
@@ -149,6 +154,7 @@ public class CanvasActionService {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
         this.cardRepository = cardRepository;
+        this.cardConnectionRepository = cardConnectionRepository;
         this.colorPaletteService = colorPaletteService;
         this.participantMetaStore = participantMetaStore;
         this.boardMemberRepository = boardMemberRepository;
@@ -196,13 +202,13 @@ public class CanvasActionService {
                     new ErrorPayload("VIEWER role cannot send UNDO"));
             return;
         }
-        if (isCardMutation(eventType) && isViewer(boardId, principal.userId())) {
+        if (requiresCanWrite(eventType) && isViewer(boardId, principal.userId())) {
             // Deliberately no dedicated error frame here, unlike UNDO above — a silent refusal
-            // matches the reference whiteboard's behaviour for every card:* mutation (§3.12 of
-            // the parity spec), whereas UNDO's targeted error is a pre-existing, unrelated
-            // behaviour of this repo that EN08.4 does not extend to card mutations (Gate 1
-            // decision, see EN08.4's backlog file).
-            LOG.warn("Card mutation rejected: VIEWER role cannot write — type={} user={} board={}",
+            // matches the reference whiteboard's behaviour for every card:*/connection:*
+            // mutation (§3.12/§3.6 of the parity spec), whereas UNDO's targeted error is a
+            // pre-existing, unrelated behaviour of this repo that EN08.4/US08.7.1 do not extend
+            // to card/connection mutations (Gate 1 decision, see EN08.4's backlog file).
+            LOG.warn("Mutation rejected: VIEWER role cannot write — type={} user={} board={}",
                     eventType, principal.userId(), boardId);
             return;
         }
@@ -219,6 +225,8 @@ public class CanvasActionService {
             case CARD_RECOLOR -> handleCardRecolor(boardId, message, principal);
             case CARD_DELETE -> handleCardDelete(boardId, message, principal);
             case CARD_LAYER -> handleCardLayer(boardId, message, principal);
+            case CONNECTION_CREATE -> handleConnectionCreate(boardId, message, principal);
+            case CONNECTION_DELETE -> handleConnectionDelete(boardId, message, principal);
             // RESET is server-emitted only (US08.2.4, via the REST reset endpoint) — a client
             // must never be able to trigger a canvas reset over STOMP, so an inbound RESET
             // frame is silently dropped here (same policy as an unknown type).
@@ -229,17 +237,18 @@ public class CanvasActionService {
     }
 
     /**
-     * Returns whether the given event type mutates the durable {@link Card} table and
-     * therefore requires {@code canWrite} (OWNER or EDITOR) — every {@code CARD_*} type
-     * except none (all seven are mutations; there is no read-only card action over STOMP,
-     * board-state on JOIN being the read path).
+     * Returns whether the given event type mutates a durable board-state table ({@link Card}
+     * or {@link CardConnection}) and therefore requires {@code canWrite} (OWNER or EDITOR) —
+     * every {@code CARD_*} and {@code CONNECTION_*} type (there is no read-only card/connection
+     * action over STOMP, board-state on JOIN being the read path).
      *
      * @param eventType the event type to check
-     * @return {@code true} for any {@code CARD_*} type
+     * @return {@code true} for any {@code CARD_*}/{@code CONNECTION_*} type
      */
-    private boolean isCardMutation(final CanvasEventType eventType) {
+    private boolean requiresCanWrite(final CanvasEventType eventType) {
         return switch (eventType) {
-            case CARD_CREATE, CARD_MOVE, CARD_RESIZE, CARD_UPDATE, CARD_RECOLOR, CARD_DELETE, CARD_LAYER -> true;
+            case CARD_CREATE, CARD_MOVE, CARD_RESIZE, CARD_UPDATE, CARD_RECOLOR, CARD_DELETE, CARD_LAYER,
+                    CONNECTION_CREATE, CONNECTION_DELETE -> true;
             default -> false;
         };
     }
@@ -291,9 +300,14 @@ public class CanvasActionService {
                 .stream()
                 .map(this::toDto)
                 .toList();
+        List<CardConnectionDto> connections = cardConnectionRepository
+                .findAllByBoardIdAndTenantId(boardId, principal.tenantId())
+                .stream()
+                .map(this::toDto)
+                .toList();
         Map<String, Object> stateData = new HashMap<>();
         stateData.put("cards", cards);
-        stateData.put("connections", List.of());
+        stateData.put("connections", connections);
         stateData.put("frames", List.of());
         stateData.put("fields", List.of());
         broadcast(boardId, principal, "board:state", stateData);
@@ -664,6 +678,74 @@ public class CanvasActionService {
                 Map.of("id", id.toString(), "layer", layer));
     }
 
+    /**
+     * Handles a CONNECTION_CREATE action: persists a new {@link CardConnection} linking two
+     * cards of this board and broadcasts it to the whole room, emitter included (US08.7.1).
+     *
+     * <p>Every refusal below is silent — no broadcast, no exception, no dedicated STOMP error
+     * frame — consistent with the reference whiteboard's behaviour for this mutation (parity
+     * spec §3.6):
+     * <ul>
+     *   <li>{@code fromId}/{@code toId} missing or unparsable.</li>
+     *   <li>Self-link ({@code fromId.equals(toId)}) — checked before any database access.</li>
+     *   <li>{@code fromId} or {@code toId} does not reference an existing card of this board —
+     *       validated with a single {@link CardRepository#countByIdInAndBoardId} call before
+     *       insert (correctif §6.5: unlike the reference whiteboard, which lets Prisma throw an
+     *       uncaught FK error here, this repo never lets that exception reach the handler).</li>
+     *   <li>A connector already links this exact pair in either direction — bidirectional
+     *       anti-duplicate ({@link CardConnectionRepository#existsBetween}).</li>
+     * </ul>
+     */
+    private void handleConnectionCreate(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID fromId = parseCardId(data.get("fromId"));
+        UUID toId = parseCardId(data.get("toId"));
+        if (fromId == null || toId == null) {
+            return;
+        }
+        if (fromId.equals(toId)) {
+            LOG.debug("Connection create refused (self-link): board={} cardId={}", boardId, fromId);
+            return;
+        }
+        if (cardRepository.countByIdInAndBoardId(List.of(fromId, toId), boardId) != 2) {
+            LOG.debug("Connection create refused (missing/foreign card ref): board={} from={} to={}",
+                    boardId, fromId, toId);
+            return;
+        }
+        if (cardConnectionRepository.existsBetween(boardId, fromId, toId)) {
+            LOG.debug("Connection create refused (bidirectional duplicate): board={} from={} to={}",
+                    boardId, fromId, toId);
+            return;
+        }
+        CardConnection connection = new CardConnection(boardId, principal.tenantId(), fromId, toId, Instant.now());
+        cardConnectionRepository.save(connection);
+
+        broadcast(boardId, principal, CanvasEventType.CONNECTION_CREATE, Map.of("connection", toDto(connection)));
+        LOG.debug("Connection created: id={} board={} from={} to={}", connection.getId(), boardId, fromId, toId);
+    }
+
+    /**
+     * Handles a CONNECTION_DELETE action: deletes a connector scoped by board. Idempotent —
+     * deleting an id that does not exist (already deleted, already cascaded away by one of its
+     * endpoint cards being deleted, wrong board, or never existed) is a silent no-op, never an
+     * exception (US08.7.1).
+     */
+    private void handleConnectionDelete(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        long deleted = cardConnectionRepository.deleteByIdAndBoardId(id, boardId);
+        if (deleted == 0) {
+            LOG.debug("Connection delete no-op (already deleted or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CONNECTION_DELETE, Map.of("id", id.toString()));
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -856,5 +938,18 @@ public class CanvasActionService {
     @SuppressWarnings("unchecked")
     private Map<String, Object> toFlatMap(final CardDto dto) {
         return objectMapper.convertValue(dto, Map.class);
+    }
+
+    /**
+     * Maps a persisted {@link CardConnection} to its wire {@link CardConnectionDto}.
+     *
+     * @param connection the persisted connector
+     * @return the corresponding {@link CardConnectionDto}
+     */
+    private CardConnectionDto toDto(final CardConnection connection) {
+        return CardConnectionDto.of(
+                connection.getId(), connection.getFromId(), connection.getToId(),
+                connection.getLabel(), connection.getColor(), connection.getShape(),
+                connection.getArrow(), connection.isDashed(), connection.getWidth());
     }
 }
