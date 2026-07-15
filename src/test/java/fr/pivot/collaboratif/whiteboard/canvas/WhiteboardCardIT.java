@@ -52,7 +52,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>An unknown/missing {@code type} falls back to {@link CardType#TEXT}, never an error.</li>
  *   <li>CARD_MOVE on an unlocked card updates its position and broadcasts.</li>
  *   <li>CARD_MOVE on a locked card is refused silently (0 rows affected, no broadcast).</li>
+ *   <li>CARD_DELETE on a locked card is refused silently — 0 deletions, no broadcast
+ *       (fix/EN08.4).</li>
+ *   <li>CARD_DELETE on an unlocked card deletes and broadcasts (fix/EN08.4).</li>
  *   <li>CARD_DELETE on an already-deleted card is an idempotent no-op, never an exception.</li>
+ *   <li>CARD_MOVE/CARD_RESIZE echo back a client-supplied {@code senderSessionId} verbatim (and
+ *       omit it when not supplied), for frontend sender-exclusion filtering (fix/EN08.4).</li>
+ *   <li>CARD_UPDATE broadcasts the full updated card, not just {@code {id, content}}
+ *       (fix/EN08.4).</li>
  *   <li>A VIEWER cannot mutate a card (silent refusal, no DB change, no error frame).</li>
  *   <li>JOIN broadcasts a {@code board:state} snapshot of the board's current cards to the
  *       whole room.</li>
@@ -238,6 +245,173 @@ class WhiteboardCardIT {
         assertThat(reloaded.getPosX()).isZero();
         assertThat(reloaded.getPosY()).isZero();
         assertThat(session.isConnected()).isTrue();
+    }
+
+    // =========================================================================
+    // Test 4b — CARD_DELETE on a locked card is refused silently (fix/EN08.4)
+    // =========================================================================
+
+    @Test
+    void card_delete_locked_is_refused_silently() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card card = seedCard(board.getId(), tenantId, true);
+
+        StompSession session = connectAs(token);
+        session.subscribe("/topic/whiteboard/" + board.getId(), noOpHandler());
+        Thread.sleep(100);
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CARD_DELETE", "data", Map.of("id", card.getId().toString())));
+
+        // No broadcast is expected — give the (silently dropped) action time to have been
+        // processed, then assert the card was never deleted.
+        Thread.sleep(300);
+        assertThat(cardRepository.findById(card.getId())).isPresent();
+        assertThat(session.isConnected()).isTrue();
+    }
+
+    // =========================================================================
+    // Test 4c — CARD_DELETE on an unlocked card deletes and broadcasts (fix/EN08.4)
+    // =========================================================================
+
+    @Test
+    void card_delete_unlocked_deletes_and_broadcasts() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card card = seedCard(board.getId(), tenantId, false);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CARD_DELETE", "data", Map.of("id", card.getId().toString())));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("card:deleted");
+        assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
+
+        // The broadcast is sent from inside handleCardDelete's @Transactional method, before
+        // the transaction actually commits — give it a moment to flush (same pattern as every
+        // other post-broadcast DB assertion in this file).
+        Thread.sleep(200);
+        assertThat(cardRepository.findById(card.getId())).isEmpty();
+    }
+
+    // =========================================================================
+    // Test 4d/4e — CARD_MOVE/CARD_RESIZE echo back a client-supplied senderSessionId
+    // (fix/EN08.4 sender exclusion) — the frontend uses this to ignore its own echo. This is a
+    // client-generated opaque correlation id (like card:create's clientTag), not the server's
+    // STOMP session id — see CanvasActionService#handleCardMove's Javadoc for why: attempting
+    // to hand the real simpSessionId back via the STOMP CONNECTED frame does not survive
+    // Spring's SimpleBroker, which rebuilds that frame's headers from scratch downstream.
+    // =========================================================================
+
+    @Test
+    void card_move_broadcast_echoes_client_supplied_sender_session_id() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card card = seedCard(board.getId(), tenantId, false);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CARD_MOVE",
+                        "data", Map.of("id", card.getId().toString(), "posX", 15.0, "posY", 25.0,
+                                "senderSessionId", "client-conn-abc123")));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("card:moved");
+        assertThat(msg.data().get("senderSessionId")).isEqualTo("client-conn-abc123");
+    }
+
+    @Test
+    void card_move_broadcast_omits_sender_session_id_when_not_supplied() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card card = seedCard(board.getId(), tenantId, false);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CARD_MOVE",
+                        "data", Map.of("id", card.getId().toString(), "posX", 5.0, "posY", 5.0)));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("card:moved");
+        assertThat(msg.data()).doesNotContainKey("senderSessionId");
+    }
+
+    @Test
+    void card_resize_broadcast_echoes_client_supplied_sender_session_id() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card card = seedCard(board.getId(), tenantId, false);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CARD_RESIZE",
+                        "data", Map.of("id", card.getId().toString(), "width", 300.0, "height", 200.0,
+                                "senderSessionId", "client-conn-xyz789")));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("card:resized");
+        assertThat(msg.data().get("senderSessionId")).isEqualTo("client-conn-xyz789");
+    }
+
+    // =========================================================================
+    // Test 4f — CARD_UPDATE broadcasts the full updated card, not just {id, content} (fix/EN08.4)
+    // =========================================================================
+
+    @Test
+    void card_update_broadcasts_full_card_not_just_id_and_content() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card card = seedCard(board.getId(), tenantId, false);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CARD_UPDATE",
+                        "data", Map.of("id", card.getId().toString(), "content", "updated text")));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("card:updated");
+        assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
+        assertThat(msg.data().get("content")).isEqualTo("updated text");
+        // The full CardDto shape, not just {id, content} — same fields card:created carries.
+        assertThat(msg.data().get("type")).isEqualTo("TEXT");
+        assertThat(((Number) msg.data().get("width")).doubleValue()).isEqualTo(192.0);
+        assertThat(((Number) msg.data().get("height")).doubleValue()).isEqualTo(128.0);
+        assertThat(msg.data().get("color")).isEqualTo("#FFEB3B");
+        assertThat(msg.data().get("locked")).isEqualTo(false);
     }
 
     // =========================================================================
