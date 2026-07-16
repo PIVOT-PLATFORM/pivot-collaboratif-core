@@ -106,7 +106,7 @@ public class CanvasActionService {
     static final Set<String> ALLOWED_CONNECTION_ARROWS = Set.of("none", "start", "end", "both");
 
     private final SimpMessagingTemplate messagingTemplate;
-    private final CanvasEventRepository canvasEventRepository;
+    private final CanvasEventWriter canvasEventWriter;
     private final CardRepository cardRepository;
     private final CardConnectionRepository cardConnectionRepository;
     private final FrameRepository frameRepository;
@@ -127,7 +127,7 @@ public class CanvasActionService {
      * Creates the service.
      *
      * @param messagingTemplate            STOMP broadcast template
-     * @param canvasEventRepository        JPA repository for DRAW persistence
+     * @param canvasEventWriter            off-thread async writer for DRAW event persistence
      * @param cardRepository               JPA repository for durable {@link Card} state (EN08.4)
      * @param cardConnectionRepository     JPA repository for durable {@link CardConnection}
      *                                     state (US08.7.1)
@@ -162,7 +162,7 @@ public class CanvasActionService {
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
-            final CanvasEventRepository canvasEventRepository,
+            final CanvasEventWriter canvasEventWriter,
             final CardRepository cardRepository,
             final CardConnectionRepository cardConnectionRepository,
             final FrameRepository frameRepository,
@@ -179,7 +179,7 @@ public class CanvasActionService {
             final TableCardContentSanitizer tableCardContentSanitizer,
             final BoardTimerStore boardTimerStore) {
         this.messagingTemplate = messagingTemplate;
-        this.canvasEventRepository = canvasEventRepository;
+        this.canvasEventWriter = canvasEventWriter;
         this.cardRepository = cardRepository;
         this.cardConnectionRepository = cardConnectionRepository;
         this.frameRepository = frameRepository;
@@ -406,8 +406,12 @@ public class CanvasActionService {
     }
 
     /**
-     * Handles a DRAW action: persists the event in the database and broadcasts.
-     * Persistence implements Last-Write-Wins (Socle strategy).
+     * Handles a DRAW action: broadcasts the event, and persists it asynchronously off the STOMP
+     * thread ({@link CanvasEventWriter}). Persistence implements Last-Write-Wins (Socle strategy):
+     * the event's creation timestamp is stamped here, at receive time, so the async write cannot
+     * reorder it. Broadcasting first (then persisting off-thread) keeps the client round-trip free
+     * of the DB write — the durable board state lives in the {@link Card}/{@link Frame} tables and
+     * the live broadcast, not in this append-only log (which no production path replays today).
      */
     private void handleDraw(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
@@ -416,10 +420,11 @@ public class CanvasActionService {
         CanvasEvent event = new CanvasEvent(
                 UUID.randomUUID(), boardId, principal.tenantId(), principal.userId(),
                 CanvasEventType.DRAW, payloadJson, OffsetDateTime.now());
-        canvasEventRepository.save(event);
 
         broadcast(boardId, principal, CanvasEventType.DRAW, data);
-        LOG.debug("Canvas DRAW persisted: eventId={} board={} user={}", event.getId(), boardId, principal.userId());
+        canvasEventWriter.persist(event);
+        LOG.debug("Canvas DRAW broadcast; async persist queued: eventId={} board={} user={}",
+                event.getId(), boardId, principal.userId());
     }
 
     /**
