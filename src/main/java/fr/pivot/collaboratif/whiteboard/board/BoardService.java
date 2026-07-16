@@ -29,6 +29,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.text.Normalizer;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -248,9 +249,16 @@ public class BoardService {
         String normalizedSearch = normalizeSearch(query);
         Page<Board> boardPage =
                 boardRepository.findAccessibleByUser(userId, tenantId, normalizedSearch, pageable);
-        Set<UUID> favoritedIds = favoritedIdsIn(userId, boardPage.getContent());
-        List<BoardResponse> responses = boardPage.getContent().stream()
-                .map(b -> toBoardResponse(b, userId, favoritedIds.contains(b.getId())))
+        List<Board> content = boardPage.getContent();
+        Set<UUID> favoritedIds = favoritedIdsIn(userId, content);
+        Map<UUID, BoardRole> rolesByBoard = rolesIn(userId, content);
+        Map<UUID, Integer> shareCounts = shareCountsIn(content);
+        List<BoardResponse> responses = content.stream()
+                .map(b -> BoardResponse.from(
+                        b,
+                        roleFor(b, userId, rolesByBoard),
+                        favoritedIds.contains(b.getId()),
+                        shareCounts.getOrDefault(b.getId(), 0)))
                 .toList();
         return new BoardPageResponse(
                 responses,
@@ -283,8 +291,11 @@ public class BoardService {
                 page, effectiveSize, Sort.by(Sort.Direction.DESC, "deletedAt"));
         Page<Board> boardPage = boardRepository
                 .findByOwnerIdAndTenantIdAndDeletedAtIsNotNull(userId, tenantId, pageable);
-        List<BoardResponse> responses = boardPage.getContent().stream()
-                .map(b -> BoardResponse.forTrash(b, BoardRole.OWNER, shareCountOf(b.getId())))
+        List<Board> content = boardPage.getContent();
+        Map<UUID, Integer> shareCounts = shareCountsIn(content);
+        List<BoardResponse> responses = content.stream()
+                .map(b -> BoardResponse.forTrash(
+                        b, BoardRole.OWNER, shareCounts.getOrDefault(b.getId(), 0)))
                 .toList();
         return new BoardPageResponse(
                 responses,
@@ -605,17 +616,76 @@ public class BoardService {
     }
 
     /**
-     * Converts a board entity to a response DTO for the given caller, resolving their role.
+     * Resolves the caller's role on one board of a listing from the pre-batched role map (see
+     * {@link #rolesIn}). Owners short-circuit without a map lookup; for a non-owner the membership
+     * row is guaranteed present because {@code findAccessibleByUser} only returns owned-or-member
+     * boards — the {@link BoardNotFoundException} fallback preserves the exact semantics of the
+     * per-row {@link #resolveRole} it replaces, defensively covering any impossible gap.
      *
-     * @param board    the board entity
-     * @param userId   the caller's {@code public.users.id}
-     * @param favorite whether the caller has favorited this board
-     * @return the board response
+     * @param board        the board entity
+     * @param userId       the caller's {@code public.users.id}
+     * @param rolesByBoard the caller's role per board id, from {@link #rolesIn}
+     * @return the caller's role on {@code board}
+     * @throws BoardNotFoundException if the caller is neither owner nor a listed member
      */
-    private BoardResponse toBoardResponse(
-            final Board board, final Long userId, final boolean favorite) {
-        BoardRole role = resolveRole(board.getId(), userId, board.getOwnerId());
-        return BoardResponse.from(board, role, favorite, shareCountOf(board.getId()));
+    private BoardRole roleFor(
+            final Board board, final Long userId, final Map<UUID, BoardRole> rolesByBoard) {
+        if (userId.equals(board.getOwnerId())) {
+            return BoardRole.OWNER;
+        }
+        BoardRole role = rolesByBoard.get(board.getId());
+        if (role == null) {
+            throw new BoardNotFoundException(board.getId());
+        }
+        return role;
+    }
+
+    /**
+     * Resolves the caller's role on every board of a page in one query — the batch counterpart of
+     * {@link #resolveRole}, avoiding an N+1 membership lookup per row. Owners are omitted (they are
+     * resolved without a lookup in {@link #roleFor}); only membership rows are fetched.
+     *
+     * @param userId the caller's {@code public.users.id}
+     * @param boards the page of boards
+     * @return the caller's {@link BoardRole} keyed by board id, for boards where a membership exists
+     */
+    private Map<UUID, BoardRole> rolesIn(final Long userId, final List<Board> boards) {
+        if (boards.isEmpty()) {
+            return Map.of();
+        }
+        Set<UUID> ids = new HashSet<>(boards.size());
+        for (Board b : boards) {
+            ids.add(b.getId());
+        }
+        Map<UUID, BoardRole> byBoard = new HashMap<>(boards.size());
+        for (BoardMember m : boardMemberRepository.findAllByIdBoardIdInAndIdUserId(ids, userId)) {
+            byBoard.put(m.getId().getBoardId(), m.getRole());
+        }
+        return byBoard;
+    }
+
+    /**
+     * Counts active shares for every board of a page in one grouped query — the batch counterpart
+     * of {@link #shareCountOf}, avoiding an N+1 count per row. Boards with zero shares are absent
+     * from the map (callers default them to {@code 0}).
+     *
+     * @param boards the page of boards
+     * @return the active-share count keyed by board id, for boards with at least one share
+     */
+    private Map<UUID, Integer> shareCountsIn(final List<Board> boards) {
+        if (boards.isEmpty()) {
+            return Map.of();
+        }
+        Set<UUID> ids = new HashSet<>(boards.size());
+        for (Board b : boards) {
+            ids.add(b.getId());
+        }
+        Map<UUID, Integer> byBoard = new HashMap<>(boards.size());
+        for (BoardMemberRepository.BoardShareCount row
+                : boardMemberRepository.countSharesGroupedByBoard(ids, BoardRole.OWNER)) {
+            byBoard.put(row.getBoardId(), (int) row.getShareCount());
+        }
+        return byBoard;
     }
 
     /**
