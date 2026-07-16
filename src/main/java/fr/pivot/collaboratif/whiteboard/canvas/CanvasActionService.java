@@ -120,6 +120,24 @@ public class CanvasActionService {
     static final Set<String> ALLOWED_CONNECTION_ARROWS = Set.of("none", "start", "end", "both");
 
     /**
+     * Finite, whitelisted set of connector line styles accepted by {@link #handleConnectionUpdate}
+     * (US08.7.2 style extension). Supersedes the legacy boolean {@code dashed}, kept derived-in-sync
+     * on write ({@link CardConnection#setLineStyle}). A {@code lineStyle} outside this set is
+     * rejected for that field alone.
+     */
+    static final Set<String> ALLOWED_LINE_STYLES = Set.of("solid", "dashed", "dotted");
+
+    /**
+     * Finite, whitelisted set of connector head caps accepted by {@link #handleConnectionUpdate}
+     * for both {@code startCap} and {@code endCap} (US08.7.2 style extension). Together they
+     * supersede the legacy {@code arrow} field, kept derived-in-sync on write
+     * ({@link CardConnection#setStartCap}/{@link CardConnection#setEndCap}). A cap value outside
+     * this set is rejected for that field alone.
+     */
+    static final Set<String> ALLOWED_CONNECTION_CAPS =
+            Set.of("none", "arrow", "triangle", "circle", "diamond");
+
+    /**
      * Events whose handler performs no synchronous JPA work — pure broadcast, Redis store, or the
      * off-thread async DRAW writer — and therefore must not open a database transaction (W4). Every
      * other event runs in a transaction (JOIN read-only, all mutations read-write); see
@@ -1101,11 +1119,15 @@ public class CanvasActionService {
      * own type/whitelist check below and is skipped like any other invalid value, never
      * persisted as {@code null}.
      *
-     * <p><strong>Field-level validation, not whole-patch rejection.</strong> {@code shape} and
-     * {@code arrow} are checked against the finite applicative whitelists
-     * {@link #ALLOWED_CONNECTION_SHAPES}/{@link #ALLOWED_CONNECTION_ARROWS} (English wire values
-     * matching {@link CardConnection}'s own creation-time defaults, US08.7.1); {@code label}/
-     * {@code color}/{@code dashed}/{@code width} are checked against their expected JSON type.
+     * <p><strong>Field-level validation, not whole-patch rejection.</strong> {@code shape},
+     * {@code arrow}, {@code lineStyle}, {@code startCap} and {@code endCap} are checked against the
+     * finite applicative whitelists {@link #ALLOWED_CONNECTION_SHAPES}/
+     * {@link #ALLOWED_CONNECTION_ARROWS}/{@link #ALLOWED_LINE_STYLES}/{@link #ALLOWED_CONNECTION_CAPS}
+     * (English wire values matching {@link CardConnection}'s own creation-time defaults);
+     * {@code label}/{@code color}/{@code dashed}/{@code width} are checked against their expected
+     * JSON type. Writing {@code lineStyle} keeps the legacy {@code dashed} flag derived-in-sync,
+     * and writing {@code startCap}/{@code endCap} keeps the legacy {@code arrow} field
+     * derived-in-sync (US08.7.2 style extension; see {@link CardConnection}).
      * A present key whose value fails its check is simply skipped — the offending field is left
      * at its previous value — rather than aborting the whole patch or throwing, consistent with
      * every other tolerant {@code CARD_*}/{@code CONNECTION_*} handler in this class.
@@ -1209,6 +1231,39 @@ public class CanvasActionService {
             if (value instanceof Number n) {
                 connection.setWidth(n.intValue());
                 mutated = true;
+            }
+        }
+        if (data.containsKey("lineStyle")) {
+            Object value = data.get("lineStyle");
+            if (value instanceof String s && ALLOWED_LINE_STYLES.contains(s)) {
+                // setLineStyle keeps the legacy `dashed` flag derived-in-sync.
+                connection.setLineStyle(s);
+                mutated = true;
+            } else {
+                LOG.debug("Connection update: lineStyle value rejected — connectionId={} value={}",
+                        connection.getId(), value);
+            }
+        }
+        if (data.containsKey("startCap")) {
+            Object value = data.get("startCap");
+            if (value instanceof String s && ALLOWED_CONNECTION_CAPS.contains(s)) {
+                // setStartCap keeps the legacy `arrow` field derived-in-sync.
+                connection.setStartCap(s);
+                mutated = true;
+            } else {
+                LOG.debug("Connection update: startCap value rejected — connectionId={} value={}",
+                        connection.getId(), value);
+            }
+        }
+        if (data.containsKey("endCap")) {
+            Object value = data.get("endCap");
+            if (value instanceof String s && ALLOWED_CONNECTION_CAPS.contains(s)) {
+                // setEndCap keeps the legacy `arrow` field derived-in-sync.
+                connection.setEndCap(s);
+                mutated = true;
+            } else {
+                LOG.debug("Connection update: endCap value rejected — connectionId={} value={}",
+                        connection.getId(), value);
             }
         }
         return mutated;
@@ -2032,7 +2087,8 @@ public class CanvasActionService {
         return CardConnectionDto.of(
                 connection.getId(), connection.getFromId(), connection.getToId(),
                 connection.getLabel(), connection.getColor(), connection.getShape(),
-                connection.getArrow(), connection.isDashed(), connection.getWidth());
+                connection.getArrow(), connection.isDashed(), connection.getWidth(),
+                connection.getLineStyle(), connection.getStartCap(), connection.getEndCap());
     }
 
     /**

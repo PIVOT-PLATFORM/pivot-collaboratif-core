@@ -220,7 +220,10 @@ class WireContractFixturesIT {
                 "straight",
                 "both",
                 true,
-                4);
+                4,
+                "dashed",
+                "arrow",
+                "arrow");
     }
 
     /**

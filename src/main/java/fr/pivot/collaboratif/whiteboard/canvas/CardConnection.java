@@ -71,13 +71,45 @@ public class CardConnection {
     @Column(name = "arrow", nullable = false, length = 20)
     private String arrow = "none";
 
-    /** Whether the connector line is dashed; defaults to {@code false}. */
+    /**
+     * Whether the connector line is dashed; defaults to {@code false}.
+     *
+     * <p>Legacy field superseded by {@link #lineStyle} (US08.7.2 style extension). Kept for
+     * back-compat and derived-in-sync on write: {@link #setLineStyle} recomputes it as
+     * {@code !"solid".equals(lineStyle)}.
+     */
     @Column(name = "dashed", nullable = false)
     private boolean dashed;
 
     /** Connector line stroke width; defaults to 2. */
     @Column(name = "width", nullable = false)
     private int width = 2;
+
+    /**
+     * Connector line style; one of {@code solid}/{@code dashed}/{@code dotted}, default
+     * {@code solid} (US08.7.2 style extension). Supersedes the boolean {@link #dashed}, which is
+     * kept derived-in-sync on write (see {@link #setLineStyle}).
+     */
+    @Column(name = "line_style", nullable = false, length = 20)
+    private String lineStyle = "solid";
+
+    /**
+     * Connector head cap at the source end; one of
+     * {@code none}/{@code arrow}/{@code triangle}/{@code circle}/{@code diamond}, default
+     * {@code none} (US08.7.2 style extension). Together with {@link #endCap} it supersedes the
+     * legacy {@link #arrow} field, which is kept derived-in-sync on write (see {@link #setStartCap}).
+     */
+    @Column(name = "start_cap", nullable = false, length = 20)
+    private String startCap = "none";
+
+    /**
+     * Connector head cap at the target end; one of
+     * {@code none}/{@code arrow}/{@code triangle}/{@code circle}/{@code diamond}, default
+     * {@code none} (US08.7.2 style extension). Together with {@link #startCap} it supersedes the
+     * legacy {@link #arrow} field, which is kept derived-in-sync on write (see {@link #setEndCap}).
+     */
+    @Column(name = "end_cap", nullable = false, length = 20)
+    private String endCap = "none";
 
     /** Timestamp when this connector was created. */
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -285,5 +317,96 @@ public class CardConnection {
      */
     public void setWidth(final int width) {
         this.width = width;
+    }
+
+    /**
+     * Returns the connector line style ({@code solid}/{@code dashed}/{@code dotted}).
+     *
+     * @return the line style
+     */
+    public String getLineStyle() {
+        return lineStyle;
+    }
+
+    /**
+     * Returns the source-end head cap.
+     *
+     * @return the start cap
+     */
+    public String getStartCap() {
+        return startCap;
+    }
+
+    /**
+     * Returns the target-end head cap.
+     *
+     * @return the end cap
+     */
+    public String getEndCap() {
+        return endCap;
+    }
+
+    /**
+     * Sets the connector line style (US08.7.2 style extension, {@code connection:update}) and
+     * keeps the legacy {@link #dashed} flag derived-in-sync: {@code dashed = !"solid".equals(lineStyle)}.
+     * Callers must validate the value against the applicative whitelist before calling this setter
+     * — see {@link fr.pivot.collaboratif.whiteboard.canvas.CanvasActionService#handleConnectionUpdate}.
+     *
+     * @param lineStyle the new line style
+     */
+    public void setLineStyle(final String lineStyle) {
+        this.lineStyle = lineStyle;
+        this.dashed = !"solid".equals(lineStyle);
+    }
+
+    /**
+     * Sets the source-end head cap (US08.7.2 style extension, {@code connection:update}) and keeps
+     * the legacy {@link #arrow} field derived-in-sync (see {@link #deriveArrow}). Callers must
+     * validate the value against the applicative whitelist before calling this setter — see
+     * {@link fr.pivot.collaboratif.whiteboard.canvas.CanvasActionService#handleConnectionUpdate}.
+     *
+     * @param startCap the new start cap
+     */
+    public void setStartCap(final String startCap) {
+        this.startCap = startCap;
+        this.arrow = deriveArrow(startCap, this.endCap);
+    }
+
+    /**
+     * Sets the target-end head cap (US08.7.2 style extension, {@code connection:update}) and keeps
+     * the legacy {@link #arrow} field derived-in-sync (see {@link #deriveArrow}). Callers must
+     * validate the value against the applicative whitelist before calling this setter — see
+     * {@link fr.pivot.collaboratif.whiteboard.canvas.CanvasActionService#handleConnectionUpdate}.
+     *
+     * @param endCap the new end cap
+     */
+    public void setEndCap(final String endCap) {
+        this.endCap = endCap;
+        this.arrow = deriveArrow(this.startCap, endCap);
+    }
+
+    /**
+     * Derives the legacy {@code arrow} value from the two head caps, best-effort: both caps
+     * {@code arrow} → {@code both}; only start → {@code start}; only end → {@code end}; otherwise
+     * {@code none}. Non-{@code arrow} caps (triangle/circle/diamond) have no legacy {@code arrow}
+     * equivalent and collapse to {@code none} on that end.
+     *
+     * @param start the source-end cap
+     * @param end   the target-end cap
+     * @return the derived legacy arrow value
+     */
+    private static String deriveArrow(final String start, final String end) {
+        boolean startArrow = "arrow".equals(start);
+        boolean endArrow = "arrow".equals(end);
+        if (startArrow && endArrow) {
+            return "both";
+        }
+        if (startArrow) {
+            return "start";
+        }
+        if (endArrow) {
+            return "end";
+        }
+        return "none";
     }
 }
