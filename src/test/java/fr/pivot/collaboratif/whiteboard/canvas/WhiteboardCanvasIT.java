@@ -363,7 +363,17 @@ class WhiteboardCanvasIT {
                 Map.of("type", "CURSOR_MOVE", "data", Map.of("x", 100, "y", 200)));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        assertThat(msg.type()).isEqualTo("CURSOR_MOVE");
+        // CURSOR_MOVE is rebroadcast as board:cursors carrying a one-element batch array
+        // [{userId, name, avatar, x, y}] (P3, fix/whiteboard-wire-contract).
+        assertThat(msg.type()).isEqualTo("board:cursors");
+        @SuppressWarnings("unchecked")
+        List<Object> batch = (List<Object>) msg.data();
+        assertThat(batch).hasSize(1);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> entry = (Map<String, Object>) batch.get(0);
+        assertThat(((Number) entry.get("x")).intValue()).isEqualTo(100);
+        assertThat(((Number) entry.get("y")).intValue()).isEqualTo(200);
+        assertThat(entry.get("userId")).isEqualTo(String.valueOf(ownerId));
 
         Thread.sleep(200);
         List<CanvasEvent> events = canvasEventRepository

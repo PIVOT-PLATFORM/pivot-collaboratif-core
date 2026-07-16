@@ -40,6 +40,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.list;
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -139,8 +141,9 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:created");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        // card:created is now a FLAT card object at the top level of data (+ optional clientTag),
+        // no longer nested under a "card" key (P1, fix/whiteboard-wire-contract).
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("TEXT");
         assertThat(cardData.get("content")).isEqualTo("Hello board");
         assertThat(((Number) cardData.get("posX")).doubleValue()).isZero();
@@ -211,7 +214,7 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:moved");
-        assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
+        assertThat(map(msg).get("id")).isEqualTo(card.getId().toString());
 
         Card reloaded = cardRepository.findById(card.getId()).orElseThrow();
         assertThat(reloaded.getPosX()).isEqualTo(42.0);
@@ -295,7 +298,9 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:deleted");
-        assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
+        // card:deleted now carries the bare id string as data (P2), not an { id } object —
+        // the frontend listens with this.on<string>('card:deleted', …).
+        assertThat(msg.data()).isEqualTo(card.getId().toString());
 
         // The broadcast is sent from inside handleCardDelete's @Transactional method, before
         // the transaction actually commits — give it a moment to flush (same pattern as every
@@ -333,7 +338,7 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:moved");
-        assertThat(msg.data().get("senderSessionId")).isEqualTo("client-conn-abc123");
+        assertThat(map(msg).get("senderSessionId")).isEqualTo("client-conn-abc123");
     }
 
     @Test
@@ -355,7 +360,7 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:moved");
-        assertThat(msg.data()).doesNotContainKey("senderSessionId");
+        assertThat(map(msg)).doesNotContainKey("senderSessionId");
     }
 
     @Test
@@ -378,7 +383,7 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:resized");
-        assertThat(msg.data().get("senderSessionId")).isEqualTo("client-conn-xyz789");
+        assertThat(map(msg).get("senderSessionId")).isEqualTo("client-conn-xyz789");
     }
 
     // =========================================================================
@@ -404,14 +409,14 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:updated");
-        assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
-        assertThat(msg.data().get("content")).isEqualTo("updated text");
+        assertThat(map(msg).get("id")).isEqualTo(card.getId().toString());
+        assertThat(map(msg).get("content")).isEqualTo("updated text");
         // The full CardDto shape, not just {id, content} — same fields card:created carries.
-        assertThat(msg.data().get("type")).isEqualTo("TEXT");
-        assertThat(((Number) msg.data().get("width")).doubleValue()).isEqualTo(192.0);
-        assertThat(((Number) msg.data().get("height")).doubleValue()).isEqualTo(128.0);
-        assertThat(msg.data().get("color")).isEqualTo("#FFEB3B");
-        assertThat(msg.data().get("locked")).isEqualTo(false);
+        assertThat(map(msg).get("type")).isEqualTo("TEXT");
+        assertThat(((Number) map(msg).get("width")).doubleValue()).isEqualTo(192.0);
+        assertThat(((Number) map(msg).get("height")).doubleValue()).isEqualTo(128.0);
+        assertThat(map(msg).get("color")).isEqualTo("#FFEB3B");
+        assertThat(map(msg).get("locked")).isEqualTo(false);
     }
 
     // =========================================================================
@@ -502,14 +507,14 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = awaitType(queue, "board:state", 8);
         assertThat(msg.type()).isEqualTo("board:state");
-        assertThat(msg.data()).containsKeys("cards", "connections", "frames", "fields");
+        assertThat(map(msg)).containsKeys("cards", "connections", "frames", "fields");
         @SuppressWarnings("unchecked")
-        List<Object> cards = (List<Object>) msg.data().get("cards");
+        List<Object> cards = (List<Object>) map(msg).get("cards");
         assertThat(cards).hasSize(2);
-        assertThat((List<?>) msg.data().get("connections")).isEmpty();
+        assertThat((List<?>) map(msg).get("connections")).isEmpty();
         // role is deliberately absent — this is a room-wide broadcast, not per-recipient
         // (see CanvasActionService class Javadoc); role stays authoritative via the REST GET.
-        assertThat(msg.data()).doesNotContainKey("role");
+        assertThat(map(msg)).doesNotContainKey("role");
     }
 
     // =========================================================================
@@ -539,33 +544,49 @@ class WhiteboardCardIT {
 
         BroadcastCanvasMessage msg = awaitType(queue, "card:created", 5);
         assertThat(msg.type()).isEqualTo("card:created");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        // card:created is now a FLAT card object at the top level of data (+ optional clientTag),
+        // no longer nested under a "card" key (P1, fix/whiteboard-wire-contract).
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("content")).isEqualTo("post-it via real wire name");
         assertThat(session.isConnected()).isTrue();
     }
 
     // =========================================================================
-    // Test 7c — board:cursor (the real wire name for CURSOR_MOVE) is accepted
+    // Test 7c — board:cursor (the real wire name for CURSOR_MOVE, P3) is rebroadcast as
+    // board:cursors carrying a one-element batch array [{userId, name, avatar, x, y}] enriched
+    // with the mover's server-side identity — the frontend listens for board:cursors with that
+    // array shape and merges each entry by userId (board.store.ts).
     // =========================================================================
 
     @Test
-    void board_cursor_wire_name_is_accepted_and_broadcasts_as_cursor_move() throws Exception {
+    void board_cursor_is_rebroadcast_as_board_cursors_batch() throws Exception {
         long tenantId = seedTenant();
         long ownerId = seedUser(tenantId);
         String token = issueToken(ownerId);
         Board board = createBoardWithOwner(tenantId, ownerId);
 
         StompSession session = connectAs(token);
-        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
-        session.subscribe("/topic/whiteboard/" + board.getId(),
-                framHandler(BroadcastCanvasMessage.class, future));
+        BlockingQueue<BroadcastCanvasMessage> queue = subscribeQueue(session, board.getId());
 
+        // JOIN first so the mover has a presence entry (displayName), then move the cursor.
+        // Wait for board:presence (emitted after handleJoin stored the meta) before the cursor
+        // frame — the STOMP inbound channel is multi-threaded, so two back-to-back sends race.
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "board:join", "data", Map.of("displayName", "Alice")));
+        awaitType(queue, "board:presence", 8);
         session.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "board:cursor", "data", Map.of("x", 100, "y", 200)));
 
-        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        assertThat(msg.type()).isEqualTo("CURSOR_MOVE");
+        BroadcastCanvasMessage msg = awaitType(queue, "board:cursors", 8);
+        assertThat(msg.type()).isEqualTo("board:cursors");
+        List<Object> batch = list(msg);
+        assertThat(batch).hasSize(1);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> entry = (Map<String, Object>) batch.get(0);
+        assertThat(entry.get("userId")).isEqualTo(String.valueOf(ownerId));
+        assertThat(entry.get("name")).isEqualTo("Alice");
+        assertThat(((Number) entry.get("x")).intValue()).isEqualTo(100);
+        assertThat(((Number) entry.get("y")).intValue()).isEqualTo(200);
         assertThat(session.isConnected()).isTrue();
     }
 
