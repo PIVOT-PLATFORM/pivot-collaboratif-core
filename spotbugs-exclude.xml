@@ -95,6 +95,13 @@
                  application's point of view — rows are Flyway-seeded only). -->
             <Package name="fr.pivot.collaboratif.whiteboard.template"/>
             <Package name="fr.pivot.collaboratif.whiteboard.template.dto"/>
+            <!-- Vote / dot-voting — VoteActionService/VoteQueryService/VoteController store
+                 constructor-injected singleton beans (repositories, SimpMessagingTemplate,
+                 ObjectMapper); VoteSession/Vote are JPA entities (mutable state required by
+                 Hibernate); VoteSessionResponse/VoteResponse are DTO records that expose mutable
+                 List for JSON transport (same rationale as the canvas.dto package above). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.vote"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.vote.dto"/>
             <Package name="fr.pivot.collaboratif.context"/>
             <Package name="fr.pivot.collaboratif.config"/>
             <Package name="fr.pivot.collaboratif.exception"/>
