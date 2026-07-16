@@ -128,7 +128,16 @@ public enum CanvasEventType {
      * server-emitted {@link #RESET} (bare enum name, DRAW-events reset driven by the REST
      * endpoint) — this one is a genuine inbound STOMP action the frontend
      * ({@code board.store.ts}) emits as {@code board:reset}. */
-    BOARD_RESET("board:reset", "board:resetted");
+    BOARD_RESET("board:reset", "board:resetted"),
+    /** Creates a new custom {@link BoardField} on the board; echoes the full flat field
+     * ({@code boardfield:created}) to the whole room (US08.10.1). */
+    BOARDFIELD_CREATE("boardfield:create", "boardfield:created"),
+    /** Updates an existing {@link BoardField}'s name/emoji/options (type never changes); echoes the
+     * full flat field ({@code boardfield:updated}) to the whole room (US08.10.1). */
+    BOARDFIELD_UPDATE("boardfield:update", "boardfield:updated"),
+    /** Deletes an existing {@link BoardField} (its card values cascade away); echoes the bare id
+     * string ({@code boardfield:deleted}), mirroring card:deleted (US08.10.1). */
+    BOARDFIELD_DELETE("boardfield:delete", "boardfield:deleted");
 
     private static final Map<String, CanvasEventType> BY_WIRE_IN = Stream.of(values())
             .collect(Collectors.toMap(t -> t.wireIn.toLowerCase(Locale.ROOT), t -> t));
