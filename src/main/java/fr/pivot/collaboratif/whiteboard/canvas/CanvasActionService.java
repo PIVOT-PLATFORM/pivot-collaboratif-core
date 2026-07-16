@@ -19,7 +19,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
@@ -77,9 +78,19 @@ import java.util.UUID;
  *
  * <p>Conflict strategy: Last-Write-Wins — the most recently received DRAW event wins.
  * No OT/CRDT resolution is implemented in the Socle.
+ *
+ * <p><strong>Transactions (W4)</strong> are scoped per action rather than by a blanket
+ * class-level {@code @Transactional}: {@link #handle} routes each event to the mode its DB
+ * footprint needs via a {@link TransactionTemplate}. High-frequency no-DB events (cursor, undo,
+ * draw — persisted off-thread since the DRAW async writer —, timer, card-editing, leave) never
+ * open a database transaction, so a burst of cursor moves no longer pins a pooled JDBC
+ * connection; JOIN's {@code board:state} snapshot runs read-only; every mutation runs in a
+ * single read-write transaction so multi-statement handlers ({@link #handleCardUpdate},
+ * {@link #handleConnectionCreate}, {@link #handleBoardReset}, …) stay atomic. Broadcasts still
+ * happen inside the write transaction (the broker is the in-memory {@code SimpleBroker}, so the
+ * cost is negligible) — moving them strictly after commit is deliberately left as a follow-up.
  */
 @Service
-@Transactional
 public class CanvasActionService {
 
     private static final Logger LOG = LoggerFactory.getLogger(CanvasActionService.class);
@@ -105,7 +116,23 @@ public class CanvasActionService {
      */
     static final Set<String> ALLOWED_CONNECTION_ARROWS = Set.of("none", "start", "end", "both");
 
+    /**
+     * Events whose handler performs no synchronous JPA work — pure broadcast, Redis store, or the
+     * off-thread async DRAW writer — and therefore must not open a database transaction (W4). Every
+     * other event runs in a transaction (JOIN read-only, all mutations read-write); see
+     * {@link #handle}. {@code RESET} is inbound-dropped (server-emitted only) so it does no DB work
+     * either.
+     */
+    private static final Set<CanvasEventType> NO_TX_EVENTS = Set.of(
+            CanvasEventType.LEAVE, CanvasEventType.DRAW, CanvasEventType.CURSOR_MOVE,
+            CanvasEventType.UNDO, CanvasEventType.CARD_EDITING, CanvasEventType.TIMER_START,
+            CanvasEventType.TIMER_STOP, CanvasEventType.RESET);
+
     private final SimpMessagingTemplate messagingTemplate;
+    /** Read-write transaction runner for mutation handlers (W4). */
+    private final TransactionTemplate writeTx;
+    /** Read-only transaction runner for the JOIN {@code board:state} snapshot (W4). */
+    private final TransactionTemplate readOnlyTx;
     private final CanvasEventWriter canvasEventWriter;
     private final CardRepository cardRepository;
     private final CardConnectionRepository cardConnectionRepository;
@@ -159,6 +186,9 @@ public class CanvasActionService {
      *                                       for any content that is not TABLE-shaped (US08.6.6)
      * @param boardTimerStore                ephemeral Redis store for the shared facilitation
      *                                       timer ({@code timer:start}/{@code timer:stop})
+     * @param transactionManager             backs the per-action {@link TransactionTemplate}s (W4)
+     *                                       used to scope each event's transaction — see the class
+     *                                       Javadoc and {@link #handle}
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -177,8 +207,13 @@ public class CanvasActionService {
             final ShapeStyleSanitizer shapeStyleSanitizer,
             final ImageCardContentValidator imageCardContentValidator,
             final TableCardContentSanitizer tableCardContentSanitizer,
-            final BoardTimerStore boardTimerStore) {
+            final BoardTimerStore boardTimerStore,
+            final PlatformTransactionManager transactionManager) {
         this.messagingTemplate = messagingTemplate;
+        this.writeTx = new TransactionTemplate(transactionManager);
+        TransactionTemplate readOnly = new TransactionTemplate(transactionManager);
+        readOnly.setReadOnly(true);
+        this.readOnlyTx = readOnly;
         this.canvasEventWriter = canvasEventWriter;
         this.cardRepository = cardRepository;
         this.cardConnectionRepository = cardConnectionRepository;
@@ -249,6 +284,37 @@ public class CanvasActionService {
                     eventType, principal.userId(), boardId);
             return;
         }
+        // W4 — run each handler in the transaction mode its DB footprint needs (see class Javadoc):
+        // no-DB events open no transaction, JOIN's snapshot runs read-only, and every mutation runs
+        // in a single read-write transaction so multi-statement handlers stay atomic.
+        if (NO_TX_EVENTS.contains(eventType)) {
+            dispatchAction(eventType, boardId, message, principal, sessionId);
+        } else if (eventType == CanvasEventType.JOIN) {
+            readOnlyTx.executeWithoutResult(status ->
+                    dispatchAction(eventType, boardId, message, principal, sessionId));
+        } else {
+            writeTx.executeWithoutResult(status ->
+                    dispatchAction(eventType, boardId, message, principal, sessionId));
+        }
+    }
+
+    /**
+     * Dispatches a validated, authorised action to its handler. Extracted from {@link #handle} so
+     * the caller can wrap it in the transaction mode the event needs (see {@link #handle}'s routing
+     * and {@link #NO_TX_EVENTS}); this method is itself transaction-agnostic.
+     *
+     * @param eventType the resolved, authorised event type
+     * @param boardId   the target board UUID
+     * @param message   the incoming canvas action
+     * @param principal the authenticated STOMP session principal
+     * @param sessionId the sender's STOMP session id (JOIN/LEAVE presence tracking)
+     */
+    private void dispatchAction(
+            final CanvasEventType eventType,
+            final UUID boardId,
+            final CanvasActionMessage message,
+            final StompPrincipal principal,
+            final String sessionId) {
         switch (eventType) {
             case JOIN -> handleJoin(boardId, message, principal, sessionId);
             case LEAVE -> handleLeave(boardId, principal, sessionId);
