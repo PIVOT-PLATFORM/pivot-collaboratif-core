@@ -29,6 +29,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 
@@ -120,6 +121,7 @@ public class CanvasActionService {
     private final ShapeStyleSanitizer shapeStyleSanitizer;
     private final ImageCardContentValidator imageCardContentValidator;
     private final TableCardContentSanitizer tableCardContentSanitizer;
+    private final BoardTimerStore boardTimerStore;
 
     /**
      * Creates the service.
@@ -155,6 +157,8 @@ public class CanvasActionService {
      * @param tableCardContentSanitizer      defence-in-depth sanitizer applied to every
      *                                       CARD_CREATE/CARD_UPDATE content string — a no-op
      *                                       for any content that is not TABLE-shaped (US08.6.6)
+     * @param boardTimerStore                ephemeral Redis store for the shared facilitation
+     *                                       timer ({@code timer:start}/{@code timer:stop})
      */
     public CanvasActionService(
             final SimpMessagingTemplate messagingTemplate,
@@ -172,7 +176,8 @@ public class CanvasActionService {
             final ApplicationEventPublisher eventPublisher,
             final ShapeStyleSanitizer shapeStyleSanitizer,
             final ImageCardContentValidator imageCardContentValidator,
-            final TableCardContentSanitizer tableCardContentSanitizer) {
+            final TableCardContentSanitizer tableCardContentSanitizer,
+            final BoardTimerStore boardTimerStore) {
         this.messagingTemplate = messagingTemplate;
         this.canvasEventRepository = canvasEventRepository;
         this.cardRepository = cardRepository;
@@ -189,6 +194,7 @@ public class CanvasActionService {
         this.shapeStyleSanitizer = shapeStyleSanitizer;
         this.imageCardContentValidator = imageCardContentValidator;
         this.tableCardContentSanitizer = tableCardContentSanitizer;
+        this.boardTimerStore = boardTimerStore;
     }
 
     /**
@@ -223,6 +229,14 @@ public class CanvasActionService {
             messagingTemplate.convertAndSendToUser(
                     principal.getName(), "/queue/errors",
                     new ErrorPayload("VIEWER role cannot send UNDO"));
+            return;
+        }
+        if (eventType == CanvasEventType.BOARD_RESET && !isOwner(boardId, principal.userId())) {
+            // The whole-board wipe is the most destructive board action — OWNER only, mirroring
+            // the reference whiteboard. Silent refusal (no error frame), same posture as the
+            // card/connection mutation refusals below.
+            LOG.warn("board:reset rejected: OWNER role required — user={} board={}",
+                    principal.userId(), boardId);
             return;
         }
         if (requiresCanWrite(eventType) && isViewer(boardId, principal.userId())) {
@@ -262,6 +276,9 @@ public class CanvasActionService {
             case FRAME_UPDATE -> handleFrameUpdate(boardId, message, principal);
             case FRAME_DELETE -> handleFrameDelete(boardId, message, principal);
             case FRAME_LAYER -> handleFrameLayer(boardId, message, principal);
+            case TIMER_START -> handleTimerStart(boardId, message, principal);
+            case TIMER_STOP -> handleTimerStop(boardId, principal);
+            case BOARD_RESET -> handleBoardReset(boardId, principal);
             // RESET is server-emitted only (US08.2.4, via the REST reset endpoint) — a client
             // must never be able to trigger a canvas reset over STOMP, so an inbound RESET
             // frame is silently dropped here (same policy as an unknown type).
@@ -275,17 +292,22 @@ public class CanvasActionService {
      * Returns whether the given event type mutates a durable board-state table ({@link Card},
      * {@link CardConnection} or {@link Frame}) and therefore requires {@code canWrite} (OWNER or
      * EDITOR) — every {@code CARD_*}, {@code CONNECTION_*} and {@code FRAME_*} type (there is no
-     * read-only card/connection/frame action over STOMP, board-state on JOIN being the read path).
+     * read-only card/connection/frame action over STOMP, board-state on JOIN being the read path),
+     * plus the shared facilitation timer controls ({@code timer:start}/{@code timer:stop}) — a
+     * VIEWER can watch the timer but not drive it. {@code BOARD_RESET} is deliberately excluded
+     * here: it needs the stricter OWNER-only guard applied separately in {@link #handle} (EDITOR
+     * is enough to write cards but not to wipe the whole board).
      *
      * @param eventType the event type to check
-     * @return {@code true} for any {@code CARD_*}/{@code CONNECTION_*}/{@code FRAME_*} type
+     * @return {@code true} for any {@code CARD_*}/{@code CONNECTION_*}/{@code FRAME_*}/{@code TIMER_*} type
      */
     private boolean requiresCanWrite(final CanvasEventType eventType) {
         return switch (eventType) {
             case CARD_CREATE, CARD_MOVE, CARD_RESIZE, CARD_UPDATE, CARD_RECOLOR, CARD_DELETE, CARD_LAYER,
                     CARD_LOCK, CARDS_GROUP, CARDS_UNGROUP, CARDS_GROUP_COLOR,
                     CONNECTION_CREATE, CONNECTION_DELETE, CONNECTION_UPDATE,
-                    FRAME_CREATE, FRAME_MOVE, FRAME_RESIZE, FRAME_UPDATE, FRAME_DELETE, FRAME_LAYER -> true;
+                    FRAME_CREATE, FRAME_MOVE, FRAME_RESIZE, FRAME_UPDATE, FRAME_DELETE, FRAME_LAYER,
+                    TIMER_START, TIMER_STOP -> true;
             // CARD_EDITING is an ephemeral presence signal (like CURSOR_MOVE), not a board-state
             // mutation — deliberately not gated as a write.
             default -> false;
@@ -355,6 +377,12 @@ public class CanvasActionService {
         stateData.put("frames", frames);
         stateData.put("fields", List.of());
         broadcast(boardId, principal, "board:state", stateData);
+
+        // Resynchronise a joiner with any running facilitation timer. The frontend's
+        // `board:state` handler ({@code board.store.ts}) does not carry a timer field, so a
+        // separate `timer:started` is (re-)broadcast room-wide — idempotent for clients already
+        // showing it (same {@code endsAt}), same room-wide rationale as {@code board:state} above.
+        broadcastActiveTimer(boardId, principal);
 
         LOG.info("Canvas JOIN: board={} user={} displayName={}", boardId, principal.userId(), displayName);
     }
@@ -1091,6 +1119,106 @@ public class CanvasActionService {
         return mutated;
     }
 
+    /**
+     * Handles a {@code timer:start} action: computes the timer's end instant, stores it
+     * ephemerally in Redis with a matching TTL ({@link BoardTimerStore}), and broadcasts
+     * {@code timer:started {endsAt, serverNow}} to the whole room (emitter included).
+     *
+     * <p>The incoming {@code duration} is a number of <strong>seconds</strong> (the frontend and
+     * PouetPouet reference contract, {@code endsAt = now + duration * 1000}); a {@code durationMs}
+     * key, if present, is honoured directly in milliseconds. A missing, non-numeric, or
+     * non-positive duration is a silent no-op — no timer stored, no broadcast — consistent with
+     * every other tolerant handler here. {@code serverNow} lets the client rebase {@code endsAt}
+     * onto its own clock, cancelling out any client/server clock skew.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming {@code timer:start} action
+     * @param principal the emitting principal
+     */
+    private void handleTimerStart(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        long durationMs = resolveDurationMs(data);
+        if (durationMs <= 0) {
+            LOG.debug("Timer start refused (missing/invalid duration): board={} user={}", boardId, principal.userId());
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long endsAt = now + durationMs;
+        boardTimerStore.start(boardId, endsAt);
+        broadcast(boardId, principal, CanvasEventType.TIMER_START, Map.of("endsAt", endsAt, "serverNow", now));
+        LOG.debug("Timer started: board={} endsAt={} user={}", boardId, endsAt, principal.userId());
+    }
+
+    /**
+     * Handles a {@code timer:stop} action: clears the board's ephemeral timer and broadcasts
+     * {@code timer:stopped} to the whole room (emitter included). Idempotent — stopping when no
+     * timer is running still broadcasts, harmlessly clearing every client's (already absent)
+     * countdown.
+     *
+     * @param boardId   the board UUID
+     * @param principal the emitting principal
+     */
+    private void handleTimerStop(final UUID boardId, final StompPrincipal principal) {
+        boardTimerStore.stop(boardId);
+        broadcast(boardId, principal, CanvasEventType.TIMER_STOP, Map.of());
+        LOG.debug("Timer stopped: board={} user={}", boardId, principal.userId());
+    }
+
+    /**
+     * Handles a {@code board:reset} action (OWNER-only, enforced in {@link #handle}): atomically
+     * deletes every connector and card of the board, then broadcasts {@code board:resetted} to
+     * the whole room (emitter included). Connectors are deleted before cards so no card is removed
+     * while a connector still references it. Board metadata (title, members, favorites) is
+     * untouched — the same invariant the REST reset preserves. This is a stronger reset than the
+     * REST {@code POST .../reset} (which clears only the legacy DRAW {@code canvas_event} rows):
+     * it wipes the durable {@link Card}/{@link CardConnection} board state, mirroring the reference
+     * whiteboard's socket reset.
+     *
+     * @param boardId   the board UUID
+     * @param principal the emitting principal (already verified OWNER)
+     */
+    private void handleBoardReset(final UUID boardId, final StompPrincipal principal) {
+        cardConnectionRepository.deleteAllByBoardIdAndTenantId(boardId, principal.tenantId());
+        cardRepository.deleteAllByBoardIdAndTenantId(boardId, principal.tenantId());
+        broadcast(boardId, principal, CanvasEventType.BOARD_RESET, Map.of());
+        LOG.info("Board reset over STOMP: board={} user={}", boardId, principal.userId());
+    }
+
+    /**
+     * (Re-)broadcasts {@code timer:started} to the room if the board currently has a running
+     * timer — used on JOIN so a late joiner catches up with an already-running countdown.
+     * {@code serverNow} is taken at broadcast time so the joiner rebases {@code endsAt} correctly.
+     *
+     * @param boardId   the board UUID
+     * @param principal the joining principal (drives the broadcast envelope)
+     */
+    private void broadcastActiveTimer(final UUID boardId, final StompPrincipal principal) {
+        OptionalLong endsAt = boardTimerStore.getActiveEndsAt(boardId);
+        if (endsAt.isPresent()) {
+            broadcast(boardId, principal, CanvasEventType.TIMER_START,
+                    Map.of("endsAt", endsAt.getAsLong(), "serverNow", System.currentTimeMillis()));
+        }
+    }
+
+    /**
+     * Resolves the requested timer duration to milliseconds from the incoming payload:
+     * {@code durationMs} (milliseconds) takes precedence, else {@code duration} (seconds) is
+     * multiplied by 1000. Returns {@code 0} for a missing or non-numeric value so the caller
+     * treats it as an invalid (dropped) request.
+     *
+     * @param data the incoming action's field-accessible payload
+     * @return the duration in milliseconds, or {@code 0} if none is resolvable
+     */
+    private long resolveDurationMs(final Map<String, Object> data) {
+        if (data.get("durationMs") instanceof Number ms) {
+            return ms.longValue();
+        }
+        if (data.get("duration") instanceof Number seconds) {
+            return seconds.longValue() * 1000L;
+        }
+        return 0L;
+    }
+
     // -------------------------------------------------------------------------
     // Frame handlers (EN08, Frames)
     // -------------------------------------------------------------------------
@@ -1402,6 +1530,22 @@ public class CanvasActionService {
         return boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, userId)
                 .map(m -> m.getRole() == BoardRole.VIEWER)
                 .orElse(true);
+    }
+
+    /**
+     * Checks whether the given user is the OWNER of the board. A board's creator is always
+     * persisted with an {@code OWNER} {@link BoardRole} membership row (see
+     * {@code BoardService#create}), so the membership lookup is authoritative here; a missing
+     * row (never a member) is treated as not-owner.
+     *
+     * @param boardId the board UUID
+     * @param userId  the user's {@code public.users.id}
+     * @return {@code true} only if the user is the board's OWNER
+     */
+    private boolean isOwner(final UUID boardId, final Long userId) {
+        return boardMemberRepository.findByIdBoardIdAndIdUserId(boardId, userId)
+                .map(m -> m.getRole() == BoardRole.OWNER)
+                .orElse(false);
     }
 
     /**

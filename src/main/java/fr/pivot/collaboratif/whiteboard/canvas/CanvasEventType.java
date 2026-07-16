@@ -110,11 +110,25 @@ public enum CanvasEventType {
     FRAME_RESIZE("frame:resize", "frame:resized"),
     /** Updates an existing {@link Frame}'s title/active/color (partial patch); echoes the full flat frame. */
     FRAME_UPDATE("frame:update", "frame:updated"),
-    /** Deletes an existing {@link Frame}; echoes {@code {id}} (mirrors this branch's card:deleted;
-     * flips to a bare id string when the #84 wire-envelope PR lands — see handleFrameDelete). */
+    /** Deletes an existing {@link Frame}; echoes the bare id string (post-#84 wire envelope,
+     * mirrors card:deleted/connection:deleted — see handleFrameDelete). */
     FRAME_DELETE("frame:delete", "frame:deleted"),
     /** Changes an existing {@link Frame}'s Z-order layer; echoes {@code {id, layer}} (EN08, Frames). */
-    FRAME_LAYER("frame:layer", "frame:layered");
+    FRAME_LAYER("frame:layer", "frame:layered"),
+    /** Starts (or restarts) the board's shared facilitation timer. Inbound {@code timer:start}
+     * carries {@code {duration}} (seconds); the server computes {@code endsAt} and broadcasts
+     * {@code timer:started {endsAt, serverNow}} room-wide. EDITOR/OWNER only. Ephemeral (Redis,
+     * {@link BoardTimerStore}) — never persisted. */
+    TIMER_START("timer:start", "timer:started"),
+    /** Stops the board's shared facilitation timer, broadcasting {@code timer:stopped}
+     * room-wide. EDITOR/OWNER only. */
+    TIMER_STOP("timer:stop", "timer:stopped"),
+    /** Client-triggered destructive board reset: deletes every card and connector of the board,
+     * then broadcasts {@code board:resetted} room-wide (OWNER only). Distinct from the legacy
+     * server-emitted {@link #RESET} (bare enum name, DRAW-events reset driven by the REST
+     * endpoint) — this one is a genuine inbound STOMP action the frontend
+     * ({@code board.store.ts}) emits as {@code board:reset}. */
+    BOARD_RESET("board:reset", "board:resetted");
 
     private static final Map<String, CanvasEventType> BY_WIRE_IN = Stream.of(values())
             .collect(Collectors.toMap(t -> t.wireIn.toLowerCase(Locale.ROOT), t -> t));
