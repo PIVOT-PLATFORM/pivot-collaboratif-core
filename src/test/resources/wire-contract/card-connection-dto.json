@@ -1,0 +1,11 @@
+{
+  "id" : "b1b1b1b1-0000-4000-8000-000000000001",
+  "fromId" : "a1a1a1a1-0000-4000-8000-000000000001",
+  "toId" : "a1a1a1a1-0000-4000-8000-000000000003",
+  "label" : "depends on",
+  "color" : "#E91E63",
+  "shape" : "straight",
+  "arrow" : "both",
+  "dashed" : true,
+  "width" : 4
+}
