@@ -158,7 +158,7 @@ class WhiteboardBoardFieldIT {
         assertThat(broadcastTypes).containsExactlyInAnyOrder("TEXT", "NUMBER", "DATE", "SELECT");
         assertThat(selectMsg).isNotNull();
         assertThat(selectMsg.get("name")).isEqualTo("Priority");
-        assertThat((List<?>) selectMsg.get("options")).containsExactly("Low", "High");
+        assertThat(selectMsg.get("options")).isEqualTo(List.of("Low", "High"));
 
         Thread.sleep(200);
         List<BoardField> persisted = boardFieldRepository
