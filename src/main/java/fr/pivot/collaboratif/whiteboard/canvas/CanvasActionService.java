@@ -2,6 +2,7 @@ package fr.pivot.collaboratif.whiteboard.canvas;
 
 import fr.pivot.collaboratif.whiteboard.board.BoardMemberRepository;
 import fr.pivot.collaboratif.whiteboard.board.BoardRole;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.BoardFieldDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardConnectionDto;
@@ -137,6 +138,7 @@ public class CanvasActionService {
     private final CardRepository cardRepository;
     private final CardConnectionRepository cardConnectionRepository;
     private final FrameRepository frameRepository;
+    private final BoardFieldRepository boardFieldRepository;
     private final ColorPaletteService colorPaletteService;
     private final ParticipantMetaStore participantMetaStore;
     private final BoardMemberRepository boardMemberRepository;
@@ -159,6 +161,7 @@ public class CanvasActionService {
      * @param cardConnectionRepository     JPA repository for durable {@link CardConnection}
      *                                     state (US08.7.1)
      * @param frameRepository              JPA repository for durable {@link Frame} state (EN08, Frames)
+     * @param boardFieldRepository         JPA repository for durable {@link BoardField} state (US08.10.1)
      * @param colorPaletteService          deterministic colour assignment
      * @param participantMetaStore         Redis store for participant metadata
      * @param boardMemberRepository        JPA repository for role lookups
@@ -196,6 +199,7 @@ public class CanvasActionService {
             final CardRepository cardRepository,
             final CardConnectionRepository cardConnectionRepository,
             final FrameRepository frameRepository,
+            final BoardFieldRepository boardFieldRepository,
             final ColorPaletteService colorPaletteService,
             final ParticipantMetaStore participantMetaStore,
             final BoardMemberRepository boardMemberRepository,
@@ -218,6 +222,7 @@ public class CanvasActionService {
         this.cardRepository = cardRepository;
         this.cardConnectionRepository = cardConnectionRepository;
         this.frameRepository = frameRepository;
+        this.boardFieldRepository = boardFieldRepository;
         this.colorPaletteService = colorPaletteService;
         this.participantMetaStore = participantMetaStore;
         this.boardMemberRepository = boardMemberRepository;
@@ -345,6 +350,9 @@ public class CanvasActionService {
             case TIMER_START -> handleTimerStart(boardId, message, principal);
             case TIMER_STOP -> handleTimerStop(boardId, principal);
             case BOARD_RESET -> handleBoardReset(boardId, principal);
+            case BOARDFIELD_CREATE -> handleBoardFieldCreate(boardId, message, principal);
+            case BOARDFIELD_UPDATE -> handleBoardFieldUpdate(boardId, message, principal);
+            case BOARDFIELD_DELETE -> handleBoardFieldDelete(boardId, message, principal);
             // RESET is server-emitted only (US08.2.4, via the REST reset endpoint) — a client
             // must never be able to trigger a canvas reset over STOMP, so an inbound RESET
             // frame is silently dropped here (same policy as an unknown type).
@@ -356,9 +364,10 @@ public class CanvasActionService {
 
     /**
      * Returns whether the given event type mutates a durable board-state table ({@link Card},
-     * {@link CardConnection} or {@link Frame}) and therefore requires {@code canWrite} (OWNER or
-     * EDITOR) — every {@code CARD_*}, {@code CONNECTION_*} and {@code FRAME_*} type (there is no
-     * read-only card/connection/frame action over STOMP, board-state on JOIN being the read path),
+     * {@link CardConnection}, {@link Frame} or {@link BoardField}) and therefore requires
+     * {@code canWrite} (OWNER or EDITOR) — every {@code CARD_*}, {@code CONNECTION_*},
+     * {@code FRAME_*} and {@code BOARDFIELD_*} type (there is no read-only
+     * card/connection/frame/field action over STOMP, board-state on JOIN being the read path),
      * plus the shared facilitation timer controls ({@code timer:start}/{@code timer:stop}) — a
      * VIEWER can watch the timer but not drive it. {@code BOARD_RESET} is deliberately excluded
      * here: it needs the stricter OWNER-only guard applied separately in {@link #handle} (EDITOR
@@ -373,6 +382,7 @@ public class CanvasActionService {
                     CARD_LOCK, CARDS_GROUP, CARDS_UNGROUP, CARDS_GROUP_COLOR,
                     CONNECTION_CREATE, CONNECTION_DELETE, CONNECTION_UPDATE,
                     FRAME_CREATE, FRAME_MOVE, FRAME_RESIZE, FRAME_UPDATE, FRAME_DELETE, FRAME_LAYER,
+                    BOARDFIELD_CREATE, BOARDFIELD_UPDATE, BOARDFIELD_DELETE,
                     TIMER_START, TIMER_STOP -> true;
             // CARD_EDITING is an ephemeral presence signal (like CURSOR_MOVE), not a board-state
             // mutation — deliberately not gated as a write.
@@ -437,11 +447,16 @@ public class CanvasActionService {
                 .stream()
                 .map(this::toDto)
                 .toList();
+        List<BoardFieldDto> fields = boardFieldRepository
+                .findAllByBoardIdOrderByOrderAscCreatedAtAsc(boardId)
+                .stream()
+                .map(BoardFieldDto::of)
+                .toList();
         Map<String, Object> stateData = new HashMap<>();
         stateData.put("cards", cards);
         stateData.put("connections", connections);
         stateData.put("frames", frames);
-        stateData.put("fields", List.of());
+        stateData.put("fields", fields);
         broadcast(boardId, principal, "board:state", stateData);
 
         // Resynchronise a joiner with any running facilitation timer. The frontend's
@@ -1510,6 +1525,140 @@ public class CanvasActionService {
             return;
         }
         broadcast(boardId, principal, type, toFlatMap(toDto(frame)));
+    }
+
+    // -------------------------------------------------------------------------
+    // Board field handlers (US08.10.1)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Handles a BOARDFIELD_CREATE action ({@code boardfield:create} inbound): persists a new
+     * {@link BoardField} on the board and broadcasts it as a flat field object
+     * ({@code boardfield:created}) to the whole room, emitter included.
+     *
+     * <p><strong>§6.6 fix.</strong> The incoming {@code type} is validated up front via
+     * {@link FieldType#fromWire}: an unknown or missing value is a silent no-op — no field
+     * persisted, no broadcast, and crucially <em>no exception</em> — rather than being persisted
+     * with an invalid discriminant or crashing the STOMP session. {@code boardId}/{@code tenantId}
+     * come from the resolved principal and the destination path, never the payload (tenant
+     * isolation). {@code options} is serialised to a JSON array when present (a SELECT field's
+     * choices); {@code order} defaults to 0.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming BOARDFIELD_CREATE action
+     * @param principal the emitting principal
+     */
+    private void handleBoardFieldCreate(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        FieldType type = FieldType.fromWire(data.get("type") instanceof String s ? s : null);
+        if (type == null) {
+            // §6.6 fix: validate before persist — an invalid/missing type is dropped silently.
+            LOG.warn("Board field create refused (invalid type '{}'): board={} user={}",
+                    data.get("type"), boardId, principal.userId());
+            return;
+        }
+        String name = data.get("name") instanceof String s ? s : "";
+        String emoji = data.get("emoji") instanceof String e ? e : null;
+        String options = serialiseOptions(data.get("options"));
+        int order = (int) toDouble(data.get("order"), 0);
+
+        BoardField field = new BoardField(
+                boardId, principal.tenantId(), name, emoji, type, options, order, Instant.now());
+        boardFieldRepository.save(field);
+
+        broadcast(boardId, principal, CanvasEventType.BOARDFIELD_CREATE, toFlatMap(BoardFieldDto.of(field)));
+        LOG.debug("Board field created: id={} board={} type={}", field.getId(), boardId, type);
+    }
+
+    /**
+     * Handles a BOARDFIELD_UPDATE action ({@code boardfield:update} inbound): rewrites an existing
+     * field's {@code name} and (when present) {@code emoji}/{@code options}, guarded by board
+     * ownership, then broadcasts the full updated flat field ({@code boardfield:updated}). The
+     * field's {@code type} is never changed (fixed for the field's lifetime, acceptance criterion).
+     * Refused silently — no broadcast — if the id is missing/unparsable or resolves to no field of
+     * this board (unknown, already deleted, or cross-board).
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming BOARDFIELD_UPDATE action
+     * @param principal the emitting principal
+     */
+    private void handleBoardFieldUpdate(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        Optional<BoardField> existing = boardFieldRepository.findByIdAndBoardId(id, boardId);
+        if (existing.isEmpty()) {
+            LOG.debug("Board field update no-op (missing or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        BoardField field = existing.get();
+        String name = data.get("name") instanceof String s ? s : field.getName();
+        String emoji = data.containsKey("emoji")
+                ? (data.get("emoji") instanceof String e ? e : null) : field.getEmoji();
+        String options = data.containsKey("options")
+                ? serialiseOptions(data.get("options")) : field.getOptions();
+        boardFieldRepository.updateNameEmojiOptions(id, boardId, name, emoji, options);
+
+        BoardField updated = boardFieldRepository.findByIdAndBoardId(id, boardId).orElse(null);
+        if (updated == null) {
+            LOG.debug("Board field update broadcast skipped: field vanished after update, id={} board={}",
+                    id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.BOARDFIELD_UPDATE, toFlatMap(BoardFieldDto.of(updated)));
+        LOG.debug("Board field updated: id={} board={}", id, boardId);
+    }
+
+    /**
+     * Handles a BOARDFIELD_DELETE action ({@code boardfield:delete} inbound): deletes a field
+     * scoped by board, then broadcasts {@code boardfield:deleted} carrying the <em>bare id
+     * string</em> — mirroring {@code card:deleted}/{@code frame:deleted} (see
+     * {@link #handleCardDelete}). The database FK cascade removes the field's
+     * {@link CardFieldValue} rows. Idempotent: deleting an id that does not exist (already deleted,
+     * on another board, or never existed) is a silent no-op — no broadcast — never an exception.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming BOARDFIELD_DELETE action
+     * @param principal the emitting principal
+     */
+    private void handleBoardFieldDelete(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID id = parseCardId(data.get("id"));
+        if (id == null) {
+            return;
+        }
+        if (boardFieldRepository.deleteByIdAndBoardId(id, boardId) == 0) {
+            LOG.debug("Board field delete no-op (already deleted or cross-board): id={} board={}", id, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.BOARDFIELD_DELETE, id.toString());
+        LOG.debug("Board field deleted: id={} board={}", id, boardId);
+    }
+
+    /**
+     * Serialises an incoming {@code options} value (expected: a JSON array of strings) to its JSON
+     * string form for the {@link BoardField#getOptions()} JSONB column. Returns {@code null} — the
+     * "no options" state — for a non-list value or on any serialisation failure, never throwing so
+     * a garbled payload cannot crash the STOMP session.
+     *
+     * @param rawOptions the raw value from the incoming action's {@code data} map
+     * @return the JSON array string, or {@code null}
+     */
+    private String serialiseOptions(final Object rawOptions) {
+        if (!(rawOptions instanceof List<?> list)) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(list);
+        } catch (RuntimeException e) {
+            LOG.warn("Could not serialise board field options: {}", e.getMessage());
+            return null;
+        }
     }
 
     // -------------------------------------------------------------------------
