@@ -46,6 +46,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -188,7 +189,7 @@ class WhiteboardLinkFetchIT {
     void nominal_fetch_broadcasts_all_four_fields() throws Exception {
         BroadcastCanvasMessage msg = createLinkAndAwaitMetaUpdated("http://localhost:" + stubPort + "/nominal");
         @SuppressWarnings("unchecked")
-        Map<String, Object> meta = (Map<String, Object>) msg.data().get("meta");
+        Map<String, Object> meta = (Map<String, Object>) map(msg).get("meta");
         assertThat(meta.get("title")).isEqualTo("Stub Page");
         assertThat(meta.get("description")).isEqualTo("A stub description.");
         assertThat(meta.get("image")).isEqualTo("https://cdn.example.com/stub.png");
@@ -203,7 +204,7 @@ class WhiteboardLinkFetchIT {
     void redirect_chain_within_cap_succeeds() throws Exception {
         BroadcastCanvasMessage msg = createLinkAndAwaitMetaUpdated("http://localhost:" + stubPort + "/redirect/3");
         @SuppressWarnings("unchecked")
-        Map<String, Object> meta = (Map<String, Object>) msg.data().get("meta");
+        Map<String, Object> meta = (Map<String, Object>) map(msg).get("meta");
         assertThat(meta.get("title")).isEqualTo("Stub Page");
     }
 
@@ -244,7 +245,7 @@ class WhiteboardLinkFetchIT {
         BroadcastCanvasMessage msg =
                 createLinkAndAwaitMetaUpdated("http://localhost:" + stubPort + "/long-description");
         @SuppressWarnings("unchecked")
-        Map<String, Object> meta = (Map<String, Object>) msg.data().get("meta");
+        Map<String, Object> meta = (Map<String, Object>) map(msg).get("meta");
         assertThat(((String) meta.get("description"))).hasSize(300);
     }
 
@@ -256,7 +257,7 @@ class WhiteboardLinkFetchIT {
     void oversized_body_is_capped_and_still_parses_leading_tags() throws Exception {
         BroadcastCanvasMessage msg = createLinkAndAwaitMetaUpdated("http://localhost:" + stubPort + "/oversized");
         @SuppressWarnings("unchecked")
-        Map<String, Object> meta = (Map<String, Object>) msg.data().get("meta");
+        Map<String, Object> meta = (Map<String, Object>) map(msg).get("meta");
         assertThat(meta.get("title")).isEqualTo("Big page");
         assertThat(meta.get("description")).isEqualTo("Still readable");
     }

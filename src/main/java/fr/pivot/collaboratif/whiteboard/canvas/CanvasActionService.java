@@ -23,6 +23,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -242,6 +243,11 @@ public class CanvasActionService {
             case CARD_RECOLOR -> handleCardRecolor(boardId, message, principal);
             case CARD_DELETE -> handleCardDelete(boardId, message, principal);
             case CARD_LAYER -> handleCardLayer(boardId, message, principal);
+            case CARD_LOCK -> handleCardLock(boardId, message, principal);
+            case CARDS_GROUP -> handleCardsGroup(boardId, message, principal);
+            case CARDS_UNGROUP -> handleCardsUngroup(boardId, message, principal);
+            case CARDS_GROUP_COLOR -> handleCardsGroupColor(boardId, message, principal);
+            case CARD_EDITING -> handleCardEditing(boardId, message, principal);
             case CONNECTION_CREATE -> handleConnectionCreate(boardId, message, principal);
             case CONNECTION_DELETE -> handleConnectionDelete(boardId, message, principal);
             case CONNECTION_UPDATE -> handleConnectionUpdate(boardId, message, principal);
@@ -266,7 +272,10 @@ public class CanvasActionService {
     private boolean requiresCanWrite(final CanvasEventType eventType) {
         return switch (eventType) {
             case CARD_CREATE, CARD_MOVE, CARD_RESIZE, CARD_UPDATE, CARD_RECOLOR, CARD_DELETE, CARD_LAYER,
+                    CARD_LOCK, CARDS_GROUP, CARDS_UNGROUP, CARDS_GROUP_COLOR,
                     CONNECTION_CREATE, CONNECTION_DELETE, CONNECTION_UPDATE -> true;
+            // CARD_EDITING is an ephemeral presence signal (like CURSOR_MOVE), not a board-state
+            // mutation — deliberately not gated as a write.
             default -> false;
         };
     }
@@ -369,12 +378,32 @@ public class CanvasActionService {
     }
 
     /**
-     * Handles a CURSOR_MOVE action: broadcasts only, no persistence (high-frequency
-     * ephemeral data not worth storing).
+     * Handles a CURSOR_MOVE action ({@code board:cursor} inbound): broadcasts only, no
+     * persistence (high-frequency ephemeral data not worth storing).
+     *
+     * <p>Rebroadcast as {@code board:cursors} carrying a <strong>one-element batch array</strong>
+     * {@code [{userId, name, avatar, x, y}]} — the frontend ({@code board.store.ts}) listens for
+     * {@code board:cursors} with a {@code [{userId, name, avatar, x, y}]} payload and merges each
+     * entry into its cursor map by {@code userId}; a single-element batch is valid (it fuses one
+     * cursor at a time). The entry is enriched server-side with the mover's identity: {@code userId}
+     * from the authenticated principal (never trusted from the client) and {@code name}/{@code avatar}
+     * from the presence store, falling back to the userId string when the mover has no presence
+     * entry yet.
      */
     private void handleCursorMove(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
         Map<String, Object> data = asMap(message.data());
-        broadcast(boardId, principal, CanvasEventType.CURSOR_MOVE, data);
+        Optional<ParticipantInfo> info = participantMetaStore.get(principal.tenantId(), boardId, principal.userId());
+        String userId = principal.userId().toString();
+        String name = info.map(ParticipantInfo::displayName).orElse(userId);
+        String avatar = info.map(ParticipantInfo::avatarUrl).orElse(null);
+
+        Map<String, Object> entry = new HashMap<>();
+        entry.put("userId", userId);
+        entry.put("name", name);
+        entry.put("avatar", avatar);
+        entry.put("x", data.get("x"));
+        entry.put("y", data.get("y"));
+        broadcast(boardId, principal, CanvasEventType.CURSOR_MOVE, List.of(entry));
     }
 
     /**
@@ -447,8 +476,10 @@ public class CanvasActionService {
         }
         cardRepository.save(card);
 
-        Map<String, Object> broadcastData = new HashMap<>();
-        broadcastData.put("card", toDto(card));
+        // Flat card fields at the top level of `data` (+ optional echoed clientTag), matching the
+        // frontend's `this.on<Card & { clientTag? }>('card:created', ({ clientTag, ...card }) => …)`
+        // — same flat shape as card:updated/card:moved/card:recolored, not a nested { card } object.
+        Map<String, Object> broadcastData = toFlatMap(toDto(card));
         if (data.get("clientTag") != null) {
             broadcastData.put("clientTag", data.get("clientTag"));
         }
@@ -672,7 +703,9 @@ public class CanvasActionService {
             LOG.debug("Card delete no-op (already deleted or cross-board): id={} board={}", id, boardId);
             return;
         }
-        broadcast(boardId, principal, CanvasEventType.CARD_DELETE, Map.of("id", id.toString()));
+        // Bare id string as `data`, matching the frontend's `this.on<string>('card:deleted', …)`
+        // — not a { id } object.
+        broadcast(boardId, principal, CanvasEventType.CARD_DELETE, id.toString());
     }
 
     /**
@@ -694,6 +727,152 @@ public class CanvasActionService {
         }
         broadcast(boardId, principal, CanvasEventType.CARD_LAYER,
                 Map.of("id", id.toString(), "layer", layer));
+    }
+
+    /**
+     * Handles a CARD_LOCK action ({@code card:lock} inbound): locks or unlocks a set of cards
+     * scoped by board, then echoes {@code cards:locked} carrying {@code {ids, locked}} to the
+     * whole room — matching the frontend's {@code this.on<{ ids, locked }>('cards:locked', …)},
+     * which flips the {@code locked} flag on every card whose id is in {@code ids}. Reuses the
+     * pre-existing {@code locked} column (no new table). Ids that are unparsable, absent, or on
+     * another board are silently dropped; an empty resulting set is a no-op (no broadcast).
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARD_LOCK action
+     * @param principal the emitting principal
+     */
+    private void handleCardLock(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        List<UUID> ids = parseCardIds(data.get("ids"));
+        if (ids.isEmpty()) {
+            return;
+        }
+        boolean locked = data.get("locked") instanceof Boolean b && b;
+        cardRepository.lockCards(ids, boardId, locked);
+        List<String> idStrings = ids.stream().map(UUID::toString).toList();
+        broadcast(boardId, principal, CanvasEventType.CARD_LOCK,
+                Map.of("ids", idStrings, "locked", locked));
+        LOG.debug("Cards locked={} count={} board={}", locked, ids.size(), boardId);
+    }
+
+    /**
+     * Handles a CARDS_GROUP action ({@code cards:group} inbound): assigns a fresh
+     * <strong>server-generated</strong> {@code groupId} to the targeted cards (reusing the
+     * existing {@code group_id} column — no new table) and echoes {@code cards:grouped} carrying
+     * {@code {cardIds, groupId}}, matching the frontend's
+     * {@code this.on<{ cardIds, groupId }>('cards:grouped', …)} (which also consumes the id via
+     * its pending-group history so an optimistic local group can adopt the authoritative id).
+     * A group needs at least two real cards of this board — fewer parseable/on-board ids is a
+     * silent no-op.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARDS_GROUP action
+     * @param principal the emitting principal
+     */
+    private void handleCardsGroup(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        List<UUID> ids = parseCardIds(data.get("cardIds"));
+        if (ids.size() < 2) {
+            return;
+        }
+        UUID groupId = UUID.randomUUID();
+        int updated = cardRepository.groupCards(ids, boardId, groupId);
+        if (updated < 2) {
+            LOG.debug("Cards group no-op (fewer than 2 real cards on board): board={}", boardId);
+            return;
+        }
+        List<String> cardIdStrings = ids.stream().map(UUID::toString).toList();
+        broadcast(boardId, principal, CanvasEventType.CARDS_GROUP,
+                Map.of("cardIds", cardIdStrings, "groupId", groupId.toString()));
+        LOG.debug("Cards grouped: groupId={} count={} board={}", groupId, updated, boardId);
+    }
+
+    /**
+     * Handles a CARDS_UNGROUP action ({@code cards:ungroup} inbound): clears the group assignment
+     * ({@code group_id}/{@code group_color}) of every card of this board in the given group, then
+     * echoes {@code cards:ungrouped} carrying the <strong>bare {@code groupId} string</strong> —
+     * matching the frontend's {@code this.on<string>('cards:ungrouped', groupId => …)}. An
+     * unparsable id, or a group with no cards on this board, is a silent no-op.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARDS_UNGROUP action
+     * @param principal the emitting principal
+     */
+    private void handleCardsUngroup(final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID groupId = parseCardId(data.get("groupId"));
+        if (groupId == null) {
+            return;
+        }
+        int updated = cardRepository.ungroupByGroupId(groupId, boardId);
+        if (updated == 0) {
+            LOG.debug("Cards ungroup no-op (empty or cross-board group): groupId={} board={}", groupId, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARDS_UNGROUP, groupId.toString());
+        LOG.debug("Cards ungrouped: groupId={} count={} board={}", groupId, updated, boardId);
+    }
+
+    /**
+     * Handles a CARDS_GROUP_COLOR action ({@code cards:group-color} inbound): recolors a group's
+     * outline ({@code group_color}) and echoes {@code cards:group-colored} carrying
+     * {@code {groupId, color}}, matching the frontend's
+     * {@code this.on<{ groupId, color }>('cards:group-colored', …)}. A {@code null} colour is
+     * accepted and clears the outline (the frontend's undo path re-emits the previous colour,
+     * which may itself be {@code null}). An unparsable {@code groupId}, or a group with no cards
+     * on this board, is a silent no-op.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARDS_GROUP_COLOR action
+     * @param principal the emitting principal
+     */
+    private void handleCardsGroupColor(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID groupId = parseCardId(data.get("groupId"));
+        if (groupId == null) {
+            return;
+        }
+        String color = data.get("color") instanceof String s ? s : null;
+        int updated = cardRepository.recolorGroup(groupId, boardId, color);
+        if (updated == 0) {
+            LOG.debug("Cards group-color no-op (empty or cross-board group): groupId={} board={}", groupId, boardId);
+            return;
+        }
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("groupId", groupId.toString());
+        payload.put("color", color);
+        broadcast(boardId, principal, CanvasEventType.CARDS_GROUP_COLOR, payload);
+        LOG.debug("Cards group recolored: groupId={} color={} board={}", groupId, color, boardId);
+    }
+
+    /**
+     * Handles a CARD_EDITING action ({@code card:editing} inbound): an ephemeral concurrent-editing
+     * signal, never persisted (like {@code CURSOR_MOVE}). Rebroadcasts {@code card:editing} carrying
+     * {@code {cardId, userId, name, editing}} enriched with the emitter's server-side identity
+     * ({@code userId} from the authenticated principal, {@code name} from the presence store,
+     * falling back to the userId string) — matching the frontend's
+     * {@code this.on<{ cardId, userId, name?, editing }>('card:editing', …)}, which shows/hides a
+     * "someone is editing" indicator keyed by {@code cardId}. An unparsable {@code cardId} is a
+     * silent no-op.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARD_EDITING action
+     * @param principal the emitting principal
+     */
+    private void handleCardEditing(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID cardId = parseCardId(data.get("cardId"));
+        if (cardId == null) {
+            return;
+        }
+        boolean editing = data.get("editing") instanceof Boolean b && b;
+        Optional<ParticipantInfo> info = participantMetaStore.get(principal.tenantId(), boardId, principal.userId());
+        String userId = principal.userId().toString();
+        String name = info.map(ParticipantInfo::displayName).orElse(userId);
+        broadcast(boardId, principal, CanvasEventType.CARD_EDITING,
+                Map.of("cardId", cardId.toString(), "userId", userId, "name", name, "editing", editing));
     }
 
     /**
@@ -739,7 +918,9 @@ public class CanvasActionService {
         CardConnection connection = new CardConnection(boardId, principal.tenantId(), fromId, toId, Instant.now());
         cardConnectionRepository.save(connection);
 
-        broadcast(boardId, principal, CanvasEventType.CONNECTION_CREATE, Map.of("connection", toDto(connection)));
+        // Flat connector fields at the top level of `data`, matching the frontend's
+        // `this.on<Connection>('connection:created', …)` — not a nested { connection } object.
+        broadcast(boardId, principal, CanvasEventType.CONNECTION_CREATE, toFlatMap(toDto(connection)));
         LOG.debug("Connection created: id={} board={} from={} to={}", connection.getId(), boardId, fromId, toId);
     }
 
@@ -761,7 +942,8 @@ public class CanvasActionService {
             LOG.debug("Connection delete no-op (already deleted or cross-board): id={} board={}", id, boardId);
             return;
         }
-        broadcast(boardId, principal, CanvasEventType.CONNECTION_DELETE, Map.of("id", id.toString()));
+        // Bare id string as `data`, matching the frontend's `this.on<string>('connection:deleted', …)`.
+        broadcast(boardId, principal, CanvasEventType.CONNECTION_DELETE, id.toString());
     }
 
     /**
@@ -825,7 +1007,8 @@ public class CanvasActionService {
             return;
         }
         cardConnectionRepository.save(connection);
-        broadcast(boardId, principal, CanvasEventType.CONNECTION_UPDATE, Map.of("connection", toDto(connection)));
+        // Flat connector fields, matching the frontend's `this.on<Connection>('connection:updated', …)`.
+        broadcast(boardId, principal, CanvasEventType.CONNECTION_UPDATE, toFlatMap(toDto(connection)));
         LOG.debug("Connection updated: id={} board={}", id, boardId);
     }
 
@@ -909,7 +1092,7 @@ public class CanvasActionService {
             final UUID boardId,
             final StompPrincipal principal,
             final CanvasEventType type,
-            final Map<String, Object> data) {
+            final Object data) {
         broadcast(boardId, principal, type.wireOut(), data);
     }
 
@@ -918,16 +1101,21 @@ public class CanvasActionService {
      * {@link CanvasEventType} (e.g. {@code board:state}, the JOIN reply) under a raw wire
      * type string.
      *
+     * <p>{@code data} is {@link Object}, not {@code Map}, so a handler can broadcast exactly the
+     * shape its frontend consumer subscribes to — a flat object, a bare string
+     * ({@code card:deleted}/{@code connection:deleted}/{@code cards:ungrouped}), or an array
+     * ({@code board:cursors}). See {@link BroadcastCanvasMessage}.
+     *
      * @param boardId   the board UUID
      * @param principal the principal that triggered this broadcast
      * @param wireType  the raw outgoing wire type string
-     * @param data      the type-specific payload
+     * @param data      the type-specific payload (object, string, or array)
      */
     private void broadcast(
             final UUID boardId,
             final StompPrincipal principal,
             final String wireType,
-            final Map<String, Object> data) {
+            final Object data) {
         String destination = BOARD_TOPIC_PREFIX + boardId;
         BroadcastCanvasMessage msg = new BroadcastCanvasMessage(
                 wireType, boardId.toString(), principal.userId().toString(), data);
@@ -1034,6 +1222,31 @@ public class CanvasActionService {
     }
 
     /**
+     * Parses a raw JSON array of card {@code id} strings (as deserialised into a {@link List})
+     * into a distinct, order-preserving list of {@link UUID}s, dropping any element that is not a
+     * parseable UUID string — a forged or garbled id in a batch (lock/group) must never crash the
+     * STOMP session, and a non-array value yields an empty list.
+     *
+     * @param rawIds the raw value from the incoming message's {@code data} map (expected: a list
+     *               of id strings)
+     * @return the parsed, de-duplicated ids in input order; empty if {@code rawIds} is not a list
+     *     or contained no parseable id
+     */
+    private List<UUID> parseCardIds(final Object rawIds) {
+        if (!(rawIds instanceof List<?> list)) {
+            return List.of();
+        }
+        List<UUID> result = new ArrayList<>();
+        for (Object element : list) {
+            UUID id = parseCardId(element);
+            if (id != null && !result.contains(id)) {
+                result.add(id);
+            }
+        }
+        return result;
+    }
+
+    /**
      * Coerces a JSON-deserialised numeric value (typically {@link Integer}, {@link Long}, or
      * {@link Double} depending on how Jackson represented the literal) to a {@code double},
      * without risking a {@link ClassCastException} from assuming one specific boxed type.
@@ -1070,18 +1283,20 @@ public class CanvasActionService {
     }
 
     /**
-     * Flattens a {@link CardDto} into a field-named {@link Map}, for broadcasts that put the
-     * card's fields directly at the top level of {@code data} (e.g. {@code card:updated}) —
-     * as opposed to {@link #handleCardCreate}'s {@code card:created}, which nests the DTO under
-     * a {@code "card"} key. The frontend's {@code card:updated} handler ({@code board.store.ts})
-     * expects the former shape, matching {@code card:moved}/{@code card:resized}/
-     * {@code card:recolored}.
+     * Flattens a DTO ({@link CardDto} or {@link CardConnectionDto}) into a field-named {@link Map},
+     * for broadcasts that put the object's fields directly at the top level of {@code data} — the
+     * shape every {@code card:*}/{@code connection:*} object broadcast now uses ({@code card:created},
+     * {@code card:updated}, {@code card:moved}, {@code connection:created}, {@code connection:updated}…),
+     * matching the frontend's {@code this.on<Card>(…)}/{@code this.on<Connection>(…)} handlers which
+     * read the fields off {@code data} directly rather than from a nested {@code { card }}/
+     * {@code { connection }} envelope. The returned {@link Map} is mutable, so a caller may add an
+     * extra echoed key (e.g. {@code clientTag} on {@code card:created}).
      *
-     * @param dto the card DTO to flatten
-     * @return a map of the DTO's fields, keyed by field name
+     * @param dto the DTO to flatten
+     * @return a mutable map of the DTO's fields, keyed by field name
      */
     @SuppressWarnings("unchecked")
-    private Map<String, Object> toFlatMap(final CardDto dto) {
+    private Map<String, Object> toFlatMap(final Object dto) {
         return objectMapper.convertValue(dto, Map.class);
     }
 
