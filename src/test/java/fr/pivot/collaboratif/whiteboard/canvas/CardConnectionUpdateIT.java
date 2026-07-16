@@ -62,6 +62,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>A connector id belonging to another board is refused (no cross-board restyle via a
  *       guessed id).</li>
  *   <li>A VIEWER cannot style a connector (silent refusal, no DB change).</li>
+ *   <li>US08.7.2 style extension: a {@code lineStyle} patch keeps the legacy {@code dashed} flag
+ *       derived-in-sync; {@code startCap}/{@code endCap} patches keep the legacy {@code arrow}
+ *       field derived-in-sync; an out-of-whitelist {@code lineStyle}/{@code startCap}/{@code endCap}
+ *       is rejected per-field, and a patch carrying only an invalid extended-style value is a
+ *       no-op.</li>
  * </ol>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -423,6 +428,175 @@ class CardConnectionUpdateIT {
         CardConnection reloaded = cardConnectionRepository.findById(connection.getId()).orElseThrow();
         assertThat(reloaded.getShape()).isEqualTo("curved");
         assertThat(session.isConnected()).isTrue();
+    }
+
+    // =========================================================================
+    // Test 9 — lineStyle patch mutates only that field and keeps `dashed` derived (US08.7.2 ext)
+    // =========================================================================
+
+    @Test
+    void connection_update_line_style_only_patch_keeps_dashed_derived() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        CardConnection connection = seedConnection(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE",
+                        "data", Map.of("id", connection.getId().toString(), "lineStyle", "dotted")));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("connection:updated");
+        Map<String, Object> connData = map(msg);
+        assertThat(connData.get("lineStyle")).isEqualTo("dotted");
+        // Legacy `dashed` is derived-in-sync: any non-solid line style ⇒ dashed=true.
+        assertThat(connData.get("dashed")).isEqualTo(true);
+        // Caps and arrow untouched — still defaults.
+        assertThat(connData.get("startCap")).isEqualTo("none");
+        assertThat(connData.get("endCap")).isEqualTo("none");
+        assertThat(connData.get("arrow")).isEqualTo("none");
+
+        Thread.sleep(200);
+        CardConnection reloaded = cardConnectionRepository.findById(connection.getId()).orElseThrow();
+        assertThat(reloaded.getLineStyle()).isEqualTo("dotted");
+        assertThat(reloaded.isDashed()).isTrue();
+
+        // Reverting to solid drives `dashed` back to false.
+        CompletableFuture<BroadcastCanvasMessage> future2 = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future2));
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE",
+                        "data", Map.of("id", connection.getId().toString(), "lineStyle", "solid")));
+        Map<String, Object> connData2 = map(future2.get(5, TimeUnit.SECONDS));
+        assertThat(connData2.get("lineStyle")).isEqualTo("solid");
+        assertThat(connData2.get("dashed")).isEqualTo(false);
+    }
+
+    // =========================================================================
+    // Test 10 — startCap/endCap patches keep the legacy `arrow` derived (US08.7.2 ext)
+    // =========================================================================
+
+    @Test
+    void connection_update_caps_keep_arrow_derived() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        CardConnection connection = seedConnection(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+
+        // endCap=arrow alone ⇒ arrow="end".
+        CompletableFuture<BroadcastCanvasMessage> f1 = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, f1));
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE",
+                        "data", Map.of("id", connection.getId().toString(), "endCap", "arrow")));
+        Map<String, Object> d1 = map(f1.get(5, TimeUnit.SECONDS));
+        assertThat(d1.get("endCap")).isEqualTo("arrow");
+        assertThat(d1.get("startCap")).isEqualTo("none");
+        assertThat(d1.get("arrow")).isEqualTo("end");
+
+        // Now startCap=arrow too ⇒ arrow="both".
+        CompletableFuture<BroadcastCanvasMessage> f2 = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, f2));
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE",
+                        "data", Map.of("id", connection.getId().toString(), "startCap", "arrow")));
+        Map<String, Object> d2 = map(f2.get(5, TimeUnit.SECONDS));
+        assertThat(d2.get("startCap")).isEqualTo("arrow");
+        assertThat(d2.get("arrow")).isEqualTo("both");
+
+        // A non-arrow cap (triangle) has no legacy equivalent ⇒ that end collapses to none;
+        // endCap stays arrow ⇒ arrow="end".
+        CompletableFuture<BroadcastCanvasMessage> f3 = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, f3));
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE",
+                        "data", Map.of("id", connection.getId().toString(), "startCap", "triangle")));
+        Map<String, Object> d3 = map(f3.get(5, TimeUnit.SECONDS));
+        assertThat(d3.get("startCap")).isEqualTo("triangle");
+        assertThat(d3.get("arrow")).isEqualTo("end");
+
+        Thread.sleep(200);
+        CardConnection reloaded = cardConnectionRepository.findById(connection.getId()).orElseThrow();
+        assertThat(reloaded.getStartCap()).isEqualTo("triangle");
+        assertThat(reloaded.getEndCap()).isEqualTo("arrow");
+        assertThat(reloaded.getArrow()).isEqualTo("end");
+    }
+
+    // =========================================================================
+    // Test 11 — an out-of-whitelist lineStyle/startCap/endCap is rejected per-field (US08.7.2 ext)
+    // =========================================================================
+
+    @Test
+    void connection_update_invalid_extended_style_values_are_rejected_per_field() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        CardConnection connection = seedConnection(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        Map<String, Object> patch = new HashMap<>();
+        patch.put("id", connection.getId().toString());
+        patch.put("lineStyle", "wavy");     // not in {solid,dashed,dotted}
+        patch.put("startCap", "spike");     // not a valid cap
+        patch.put("endCap", "arrow");       // valid — the one field that must apply
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE", "data", patch));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        Map<String, Object> connData = map(msg);
+        // Only the valid endCap applied; the two rejected fields stay at their defaults.
+        assertThat(connData.get("endCap")).isEqualTo("arrow");
+        assertThat(connData.get("startCap")).isEqualTo("none");
+        assertThat(connData.get("lineStyle")).isEqualTo("solid");
+        assertThat(connData.get("dashed")).isEqualTo(false);
+        assertThat(connData.get("arrow")).isEqualTo("end");
+    }
+
+    @Test
+    void connection_update_patch_with_only_an_invalid_line_style_is_noop() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        CardConnection connection = seedConnection(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        List<BroadcastCanvasMessage> received = new CopyOnWriteArrayList<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                collectingHandler(BroadcastCanvasMessage.class, received));
+        Thread.sleep(100);
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE",
+                        "data", Map.of("id", connection.getId().toString(), "lineStyle", "wavy")));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CARD_CREATE", "data", Map.of("content", "still alive")));
+        Thread.sleep(300);
+
+        assertThat(received).noneMatch(m -> "connection:updated".equals(m.type()));
+        assertThat(received).anyMatch(m -> "card:created".equals(m.type()));
+        CardConnection reloaded = cardConnectionRepository.findById(connection.getId()).orElseThrow();
+        assertThat(reloaded.getLineStyle()).isEqualTo("solid");
+        assertThat(reloaded.isDashed()).isFalse();
     }
 
     // =========================================================================

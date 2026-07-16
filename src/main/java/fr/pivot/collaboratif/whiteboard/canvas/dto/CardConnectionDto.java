@@ -15,10 +15,19 @@ import java.util.UUID;
  * @param toId   the target card's UUID as a string
  * @param label  the connector label, or {@code null} until styled (US08.7.2)
  * @param color  the connector hex colour, or {@code null} until styled (US08.7.2)
- * @param shape  the connector line shape (fixed default {@code curved} at creation)
- * @param arrow  the connector arrowhead style (fixed default {@code none} at creation)
- * @param dashed whether the connector line is dashed (fixed default {@code false} at creation)
- * @param width  the connector line stroke width (fixed default 2 at creation)
+ * @param shape     the connector line shape (fixed default {@code curved} at creation)
+ * @param arrow     the legacy arrowhead style, derived from {@code startCap}/{@code endCap}
+ *                  (fixed default {@code none} at creation) — kept for back-compat
+ * @param dashed    the legacy dashed flag, derived from {@code lineStyle} (fixed default
+ *                  {@code false} at creation) — kept for back-compat
+ * @param width     the connector line stroke width (fixed default 2 at creation)
+ * @param lineStyle the connector line style {@code solid}/{@code dashed}/{@code dotted}
+ *                  (default {@code solid}, US08.7.2 style extension; supersedes {@code dashed})
+ * @param startCap  the source-end head cap {@code none}/{@code arrow}/{@code triangle}/
+ *                  {@code circle}/{@code diamond} (default {@code none}, US08.7.2 style extension)
+ * @param endCap    the target-end head cap {@code none}/{@code arrow}/{@code triangle}/
+ *                  {@code circle}/{@code diamond} (default {@code none}, US08.7.2 style extension;
+ *                  supersedes {@code arrow})
  */
 public record CardConnectionDto(
         String id,
@@ -29,7 +38,10 @@ public record CardConnectionDto(
         String shape,
         String arrow,
         boolean dashed,
-        int width) {
+        int width,
+        String lineStyle,
+        String startCap,
+        String endCap) {
 
     /**
      * Builds a {@link CardConnectionDto} from a persisted connector's fields.
@@ -39,10 +51,13 @@ public record CardConnectionDto(
      * @param toId   the target card UUID
      * @param label  the label, or {@code null}
      * @param color  the hex colour, or {@code null}
-     * @param shape  the line shape
-     * @param arrow  the arrowhead style
-     * @param dashed whether the line is dashed
-     * @param width  the line stroke width
+     * @param shape     the line shape
+     * @param arrow     the legacy arrowhead style (derived)
+     * @param dashed    whether the line is dashed (legacy, derived)
+     * @param width     the line stroke width
+     * @param lineStyle the line style ({@code solid}/{@code dashed}/{@code dotted})
+     * @param startCap  the source-end head cap
+     * @param endCap    the target-end head cap
      * @return a new {@link CardConnectionDto}
      */
     public static CardConnectionDto of(
@@ -54,8 +69,12 @@ public record CardConnectionDto(
             final String shape,
             final String arrow,
             final boolean dashed,
-            final int width) {
+            final int width,
+            final String lineStyle,
+            final String startCap,
+            final String endCap) {
         return new CardConnectionDto(
-                id.toString(), fromId.toString(), toId.toString(), label, color, shape, arrow, dashed, width);
+                id.toString(), fromId.toString(), toId.toString(), label, color, shape, arrow, dashed, width,
+                lineStyle, startCap, endCap);
     }
 }
