@@ -38,6 +38,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -136,8 +137,7 @@ class CardConnectionIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("connection:created");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> connData = (Map<String, Object>) msg.data().get("connection");
+        Map<String, Object> connData = map(msg);
         assertThat(connData.get("fromId")).isEqualTo(cardA.getId().toString());
         assertThat(connData.get("toId")).isEqualTo(cardB.getId().toString());
         assertThat(connData.get("shape")).isEqualTo("curved");
@@ -402,6 +402,39 @@ class CardConnectionIT {
         Thread.sleep(300);
         assertThat(cardConnectionRepository.findById(connection.getId())).isPresent();
         assertThat(session.isConnected()).isTrue();
+    }
+
+    // =========================================================================
+    // Test 6b — CONNECTION_DELETE broadcasts the bare id string as data (P2,
+    // fix/whiteboard-wire-contract) — the frontend listens with
+    // this.on<string>('connection:deleted', …), not an { id } object.
+    // =========================================================================
+
+    @Test
+    void connection_delete_broadcasts_bare_id_string() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card cardA = seedCard(board.getId(), tenantId);
+        Card cardB = seedCard(board.getId(), tenantId);
+        CardConnection connection = cardConnectionRepository.save(
+                new CardConnection(board.getId(), tenantId, cardA.getId(), cardB.getId(), Instant.now()));
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_DELETE", "data", Map.of("id", connection.getId().toString())));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("connection:deleted");
+        assertThat(msg.data()).isEqualTo(connection.getId().toString());
+
+        Thread.sleep(200);
+        assertThat(cardConnectionRepository.findById(connection.getId())).isEmpty();
     }
 
     // =========================================================================

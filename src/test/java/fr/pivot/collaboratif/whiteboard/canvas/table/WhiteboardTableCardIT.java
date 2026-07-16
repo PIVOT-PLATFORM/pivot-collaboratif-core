@@ -41,6 +41,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -126,8 +127,7 @@ class WhiteboardTableCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:created");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("TABLE");
         assertThat(cardData.get("content")).isEqualTo(grid);
 
@@ -162,7 +162,7 @@ class WhiteboardTableCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:updated");
-        assertThat(msg.data().get("content")).isEqualTo(pasted);
+        assertThat(map(msg).get("content")).isEqualTo(pasted);
 
         Card reloaded = cardRepository.findById(card.getId()).orElseThrow();
         assertThat(reloaded.getContent()).isEqualTo(pasted);
