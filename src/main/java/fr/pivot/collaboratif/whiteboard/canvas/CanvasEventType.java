@@ -31,12 +31,14 @@ import java.util.stream.Stream;
  *       not as a {@code canvas_event} row (the append-only {@code DRAW} persistence of US08.3.1
  *       is superseded by the {@link Card} current-state table — see EN08.4's Gate 1 notes).</li>
  *   <li>{@link #CARD_CREATE}, {@link #CARD_MOVE}, {@link #CARD_RESIZE}, {@link #CARD_UPDATE},
- *       {@link #CARD_RECOLOR}, {@link #CARD_DELETE}, {@link #CARD_LAYER} — mutate the durable
- *       {@link Card} table (EN08.4).</li>
+ *       {@link #CARD_RECOLOR}, {@link #CARD_DELETE}, {@link #CARD_LAYER}, {@link #CARD_LOCK},
+ *       {@link #CARDS_GROUP}, {@link #CARDS_UNGROUP}, {@link #CARDS_GROUP_COLOR} — mutate the
+ *       durable {@link Card} table (EN08.4; grouping/locking reuse existing columns, no new
+ *       table).</li>
  *   <li>{@link #CONNECTION_CREATE}, {@link #CONNECTION_DELETE}, {@link #CONNECTION_UPDATE} —
  *       mutate the durable {@link CardConnection} table (US08.7.1, US08.7.2).</li>
- *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO}, {@link #RESET} —
- *       ephemeral, broadcast only, never persisted.</li>
+ *   <li>{@link #JOIN}, {@link #LEAVE}, {@link #CURSOR_MOVE}, {@link #UNDO}, {@link #RESET},
+ *       {@link #CARD_EDITING} — ephemeral, broadcast only, never persisted.</li>
  * </ul>
  */
 public enum CanvasEventType {
@@ -50,8 +52,13 @@ public enum CanvasEventType {
     /** Drawing action broadcast (visual feedback during a stroke); not persisted directly —
      * see the class-level Javadoc for how free-hand strokes are actually persisted (EN08.4). */
     DRAW("DRAW"),
-    /** Cursor position update; broadcast only, never persisted (high-frequency, low-value). */
-    CURSOR_MOVE("board:cursor", "CURSOR_MOVE"),
+    /** Cursor position update; broadcast only, never persisted (high-frequency, low-value).
+     * Incoming as {@code board:cursor} (a single {@code {x, y}}); rebroadcast as
+     * {@code board:cursors} carrying a one-element batch enriched with the mover's
+     * {@code userId}/{@code name}/{@code avatar} — the frontend ({@code board.store.ts}) listens
+     * for {@code board:cursors} with a {@code [{userId, name, avatar, x, y}]} array and merges by
+     * {@code userId}. */
+    CURSOR_MOVE("board:cursor", "board:cursors"),
     /** Undo request; broadcast for visual sync, stack logic delegated to US08.3.3. */
     UNDO("UNDO"),
     /** Board canvas reset (US08.2.4): broadcast only, never persisted — the triggering
@@ -72,6 +79,22 @@ public enum CanvasEventType {
     CARD_DELETE("card:delete", "card:deleted"),
     /** Changes an existing {@link Card}'s Z-order layer; not blocked by {@code locked} (EN08.4). */
     CARD_LAYER("card:layer", "card:layered"),
+    /** Locks or unlocks a set of {@link Card}s (the {@code locked} column already exists, EN08.4);
+     * echoes {@code cards:locked} carrying {@code {ids, locked}} to the whole room. */
+    CARD_LOCK("card:lock", "cards:locked"),
+    /** Groups a set of {@link Card}s under a fresh server-assigned {@code group_id}; echoes
+     * {@code cards:grouped} carrying {@code {cardIds, groupId}}. */
+    CARDS_GROUP("cards:group", "cards:grouped"),
+    /** Ungroups every {@link Card} of a given group (clears {@code group_id}/{@code group_color});
+     * echoes {@code cards:ungrouped} carrying the bare {@code groupId} string. */
+    CARDS_UNGROUP("cards:ungroup", "cards:ungrouped"),
+    /** Recolors a group's outline ({@code group_color}); echoes {@code cards:group-colored}
+     * carrying {@code {groupId, color}}. */
+    CARDS_GROUP_COLOR("cards:group-color", "cards:group-colored"),
+    /** Ephemeral concurrent-editing signal for a {@link Card}; never persisted. Echoes
+     * {@code card:editing} carrying {@code {cardId, userId, name, editing}} enriched with the
+     * emitter's server-side identity. */
+    CARD_EDITING("card:editing", "card:editing"),
     /** Creates a new {@link CardConnection} linking two {@link Card}s (US08.7.1). */
     CONNECTION_CREATE("connection:create", "connection:created"),
     /** Deletes an existing {@link CardConnection}; tolerant of an already-cascaded id (US08.7.1). */
@@ -79,6 +102,19 @@ public enum CanvasEventType {
     /** Applies a partial style patch to an existing {@link CardConnection} — only the fields
      * present in the incoming payload are mutated (US08.7.2). */
     CONNECTION_UPDATE("connection:update", "connection:updated"),
+    /** Creates a new {@link Frame} container (EN08, Frames); echoes the full flat frame. */
+    FRAME_CREATE("frame:create", "frame:created"),
+    /** Moves an existing {@link Frame}; echoes the full flat frame (EN08, Frames). */
+    FRAME_MOVE("frame:move", "frame:moved"),
+    /** Resizes an existing {@link Frame} (and optionally moves it); echoes the full flat frame. */
+    FRAME_RESIZE("frame:resize", "frame:resized"),
+    /** Updates an existing {@link Frame}'s title/active/color (partial patch); echoes the full flat frame. */
+    FRAME_UPDATE("frame:update", "frame:updated"),
+    /** Deletes an existing {@link Frame}; echoes the bare id string (post-#84 wire envelope,
+     * mirrors card:deleted/connection:deleted — see handleFrameDelete). */
+    FRAME_DELETE("frame:delete", "frame:deleted"),
+    /** Changes an existing {@link Frame}'s Z-order layer; echoes {@code {id, layer}} (EN08, Frames). */
+    FRAME_LAYER("frame:layer", "frame:layered"),
     /** Starts (or restarts) the board's shared facilitation timer. Inbound {@code timer:start}
      * carries {@code {duration}} (seconds); the server computes {@code endsAt} and broadcasts
      * {@code timer:started {endsAt, serverNow}} room-wide. EDITOR/OWNER only. Ephemeral (Redis,

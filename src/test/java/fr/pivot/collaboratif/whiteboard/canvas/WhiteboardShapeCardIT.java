@@ -38,6 +38,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -134,8 +135,7 @@ class WhiteboardShapeCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:created");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("SHAPE");
         assertThat(cardData.get("content")).isEqualTo("rect|#A5B4FC|none|1|0");
         assertThat(((Number) cardData.get("width")).doubleValue()).isEqualTo(192.0);
@@ -178,8 +178,7 @@ class WhiteboardShapeCardIT {
                         "layer", 3)));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("SHAPE");
         assertThat((String) cardData.get("content")).isEqualTo("circle|#445566|#112233|0.8|0");
         assertThat(((Number) cardData.get("width")).doubleValue()).isEqualTo(300.0);
@@ -210,8 +209,7 @@ class WhiteboardShapeCardIT {
                         "content", "<script>alert(1)</script>|url(javascript:alert(1))|javascript:alert(1)|1|0")));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        Map<String, Object> cardData = map(msg);
         String content = (String) cardData.get("content");
         assertThat(content).doesNotContain("script").doesNotContain("javascript:");
         assertThat(content).isEqualTo("rect|#A5B4FC|none|1|0");
@@ -243,8 +241,7 @@ class WhiteboardShapeCardIT {
                         "type", "SHAPPE", "content", "plain text, not JSON style")));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("TEXT");
         // Content is untouched by the shape sanitiser — it stays exactly what was sent.
         assertThat(cardData.get("content")).isEqualTo("plain text, not JSON style");
@@ -366,8 +363,8 @@ class WhiteboardShapeCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:updated");
-        assertThat(msg.data().get("id")).isEqualTo(shape.getId().toString());
-        String broadcastContent = (String) msg.data().get("content");
+        assertThat(map(msg).get("id")).isEqualTo(shape.getId().toString());
+        String broadcastContent = (String) map(msg).get("content");
         assertThat(broadcastContent).isEqualTo("diamond|#112233|none|1|0");
 
         Card reloaded = cardRepository.findById(shape.getId()).orElseThrow();

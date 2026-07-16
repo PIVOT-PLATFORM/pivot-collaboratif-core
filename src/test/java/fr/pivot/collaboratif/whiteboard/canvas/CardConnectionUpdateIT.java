@@ -40,6 +40,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -137,8 +138,7 @@ class CardConnectionUpdateIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("connection:updated");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> connData = (Map<String, Object>) msg.data().get("connection");
+        Map<String, Object> connData = map(msg);
         assertThat(connData.get("id")).isEqualTo(connection.getId().toString());
         assertThat(connData.get("shape")).isEqualTo("orthogonal");
         // Every other field untouched — still the spec-mandated creation defaults.
@@ -184,8 +184,7 @@ class CardConnectionUpdateIT {
                 Map.of("type", "CONNECTION_UPDATE", "data", patch));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> connData = (Map<String, Object>) msg.data().get("connection");
+        Map<String, Object> connData = map(msg);
         assertThat(connData.get("color")).isEqualTo("#FF0000");
         assertThat(((Number) connData.get("width")).intValue()).isEqualTo(5);
         assertThat(connData.get("dashed")).isEqualTo(true);
@@ -221,8 +220,7 @@ class CardConnectionUpdateIT {
                 Map.of("type", "CONNECTION_UPDATE", "data", patch));
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> connData = (Map<String, Object>) msg.data().get("connection");
+        Map<String, Object> connData = map(msg);
         assertThat(connData.get("label")).isNull();
 
         Thread.sleep(200);
@@ -300,8 +298,7 @@ class CardConnectionUpdateIT {
         // shape/arrow left at their previous (default) values — field-level rejection, not
         // whole-patch rejection.
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> connData = (Map<String, Object>) msg.data().get("connection");
+        Map<String, Object> connData = map(msg);
         assertThat(connData.get("color")).isEqualTo("#123456");
         assertThat(connData.get("shape")).isEqualTo("curved");
         assertThat(connData.get("arrow")).isEqualTo("none");

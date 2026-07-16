@@ -39,6 +39,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -132,8 +133,8 @@ class WhiteboardTimerResetIT {
         BroadcastCanvasMessage msg = started.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("timer:started");
         assertThat(msg.boardId()).isEqualTo(board.getId().toString());
-        long endsAt = ((Number) msg.data().get("endsAt")).longValue();
-        long serverNow = ((Number) msg.data().get("serverNow")).longValue();
+        long endsAt = ((Number) map(msg).get("endsAt")).longValue();
+        long serverNow = ((Number) map(msg).get("serverNow")).longValue();
         // duration=300s → endsAt is exactly 300_000 ms after serverNow, and both are around "now".
         assertThat(endsAt - serverNow).isEqualTo(300_000L);
         assertThat(serverNow).isGreaterThanOrEqualTo(beforeSend);
@@ -179,7 +180,7 @@ class WhiteboardTimerResetIT {
         Thread.sleep(200);
         owner.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "timer:start", "data", Map.of("boardId", board.getId().toString(), "duration", 600)));
-        long canonicalEndsAt = ((Number) ownerStarted.get(5, TimeUnit.SECONDS).data().get("endsAt")).longValue();
+        long canonicalEndsAt = ((Number) map(ownerStarted.get(5, TimeUnit.SECONDS)).get("endsAt")).longValue();
 
         // A late joiner subscribes, then JOINs, and must be resynced with the running timer.
         StompSession joiner = connectAs(issueToken(editorId));
@@ -190,8 +191,8 @@ class WhiteboardTimerResetIT {
                 Map.of("type", "JOIN", "data", Map.of("displayName", "Bob")));
 
         BroadcastCanvasMessage msg = joinerStarted.get(5, TimeUnit.SECONDS);
-        assertThat(((Number) msg.data().get("endsAt")).longValue()).isEqualTo(canonicalEndsAt);
-        assertThat(msg.data().get("serverNow")).isNotNull();
+        assertThat(((Number) map(msg).get("endsAt")).longValue()).isEqualTo(canonicalEndsAt);
+        assertThat(map(msg).get("serverNow")).isNotNull();
     }
 
     // =========================================================================

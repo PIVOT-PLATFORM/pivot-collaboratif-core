@@ -84,6 +84,30 @@ CREATE TABLE IF NOT EXISTS collaboratif.card (
 );
 CREATE INDEX IF NOT EXISTS idx_card_board ON collaboratif.card(board_id, layer ASC, created_at ASC);
 
+-- EN08 (Frames): frame — durable current-state table for whiteboard frame/section containers
+-- (one row per frame, updated in place), same durable-state model as card above. A frame is a
+-- rectangular container ("cadre"/section box) that groups an area of the canvas; the frontend's
+-- Frame model (board.types.ts) is {id, boardId, title, posX, posY, width, height, color, active,
+-- layer}. Created/moved/resized/updated/deleted/re-layered exclusively over STOMP (frame:* actions,
+-- see CanvasActionService) — no dedicated REST route, mirroring cards. Defaults (400x300, title '',
+-- #94A3B8, active false, layer 0 so frames sit behind cards) are server-authoritative: the frontend
+-- basic create sends only {boardId, posX, posY} and adopts whatever the server echoes back.
+CREATE TABLE IF NOT EXISTS collaboratif.frame (
+    id          UUID             NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    board_id    UUID             NOT NULL REFERENCES collaboratif.board(id) ON DELETE CASCADE,
+    tenant_id   BIGINT           NOT NULL REFERENCES public.tenants(id),
+    pos_x       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    pos_y       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    width       DOUBLE PRECISION NOT NULL DEFAULT 400,
+    height      DOUBLE PRECISION NOT NULL DEFAULT 300,
+    title       VARCHAR(200)     NOT NULL DEFAULT '',
+    color       VARCHAR(20)      NOT NULL DEFAULT '#94A3B8',
+    active      BOOLEAN          NOT NULL DEFAULT false,
+    layer       INTEGER          NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ      NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_frame_board ON collaboratif.frame(board_id, layer ASC, created_at ASC);
+
 -- US08.4.1: whiteboard_template + whiteboard_template_element
 -- tenant_id nullable: NULL = global public template. Resolution Gate 1 (pivot-docs,
 -- us-tableau-depuis-template.md): in Socle only global templates exist, no tenant-scoped
