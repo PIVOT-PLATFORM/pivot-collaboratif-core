@@ -21,7 +21,13 @@
       "groupId" : "a1a1a1a1-0000-4000-8000-000000000002",
       "groupColor" : "#9C27B0",
       "locked" : false,
-      "layer" : 3
+      "layer" : 3,
+      "fieldValues" : [ {
+        "id" : "d1d1d1d1-0000-4000-8000-000000000001",
+        "cardId" : "a1a1a1a1-0000-4000-8000-000000000001",
+        "fieldId" : "e1e1e1e1-0000-4000-8000-000000000001",
+        "value" : "In progress"
+      } ]
     } ],
     "connections" : [ {
       "id" : "b1b1b1b1-0000-4000-8000-000000000001",

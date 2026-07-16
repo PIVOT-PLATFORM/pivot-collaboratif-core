@@ -7,6 +7,7 @@ import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardConnectionDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.FieldValueDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.FrameDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
 import fr.pivot.collaboratif.whiteboard.canvas.opengraph.CardContentEnrichmentRequestedEvent;
@@ -18,6 +19,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -139,6 +141,7 @@ public class CanvasActionService {
     private final CardConnectionRepository cardConnectionRepository;
     private final FrameRepository frameRepository;
     private final BoardFieldRepository boardFieldRepository;
+    private final CardFieldValueRepository cardFieldValueRepository;
     private final ColorPaletteService colorPaletteService;
     private final ParticipantMetaStore participantMetaStore;
     private final BoardMemberRepository boardMemberRepository;
@@ -162,6 +165,7 @@ public class CanvasActionService {
      *                                     state (US08.7.1)
      * @param frameRepository              JPA repository for durable {@link Frame} state (EN08, Frames)
      * @param boardFieldRepository         JPA repository for durable {@link BoardField} state (US08.10.1)
+     * @param cardFieldValueRepository     JPA repository for durable {@link CardFieldValue} state (US08.10.2)
      * @param colorPaletteService          deterministic colour assignment
      * @param participantMetaStore         Redis store for participant metadata
      * @param boardMemberRepository        JPA repository for role lookups
@@ -200,6 +204,7 @@ public class CanvasActionService {
             final CardConnectionRepository cardConnectionRepository,
             final FrameRepository frameRepository,
             final BoardFieldRepository boardFieldRepository,
+            final CardFieldValueRepository cardFieldValueRepository,
             final ColorPaletteService colorPaletteService,
             final ParticipantMetaStore participantMetaStore,
             final BoardMemberRepository boardMemberRepository,
@@ -223,6 +228,7 @@ public class CanvasActionService {
         this.cardConnectionRepository = cardConnectionRepository;
         this.frameRepository = frameRepository;
         this.boardFieldRepository = boardFieldRepository;
+        this.cardFieldValueRepository = cardFieldValueRepository;
         this.colorPaletteService = colorPaletteService;
         this.participantMetaStore = participantMetaStore;
         this.boardMemberRepository = boardMemberRepository;
@@ -353,6 +359,8 @@ public class CanvasActionService {
             case BOARDFIELD_CREATE -> handleBoardFieldCreate(boardId, message, principal);
             case BOARDFIELD_UPDATE -> handleBoardFieldUpdate(boardId, message, principal);
             case BOARDFIELD_DELETE -> handleBoardFieldDelete(boardId, message, principal);
+            case CARDFIELD_SET -> handleCardFieldSet(boardId, message, principal);
+            case CARDFIELD_CLEAR -> handleCardFieldClear(boardId, message, principal);
             // RESET is server-emitted only (US08.2.4, via the REST reset endpoint) — a client
             // must never be able to trigger a canvas reset over STOMP, so an inbound RESET
             // frame is silently dropped here (same policy as an unknown type).
@@ -383,6 +391,7 @@ public class CanvasActionService {
                     CONNECTION_CREATE, CONNECTION_DELETE, CONNECTION_UPDATE,
                     FRAME_CREATE, FRAME_MOVE, FRAME_RESIZE, FRAME_UPDATE, FRAME_DELETE, FRAME_LAYER,
                     BOARDFIELD_CREATE, BOARDFIELD_UPDATE, BOARDFIELD_DELETE,
+                    CARDFIELD_SET, CARDFIELD_CLEAR,
                     TIMER_START, TIMER_STOP -> true;
             // CARD_EDITING is an ephemeral presence signal (like CURSOR_MOVE), not a board-state
             // mutation — deliberately not gated as a write.
@@ -1640,6 +1649,102 @@ public class CanvasActionService {
         LOG.debug("Board field deleted: id={} board={}", id, boardId);
     }
 
+    // -------------------------------------------------------------------------
+    // Card field value handlers (US08.10.2)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Handles a CARDFIELD_SET action ({@code cardfield:set} inbound, {@code {cardId, fieldId,
+     * value}}): upserts a {@link CardFieldValue} on the {@code (cardId, fieldId)} pair — updating
+     * the existing row's value if one is present, else inserting a new one — then broadcasts the
+     * full flat value ({@code cardfield:updated}) carrying {@code {id, cardId, fieldId, value}} to
+     * the whole room, emitter included. The broadcast carries the DB-assigned {@code id} so the
+     * frontend can upsert it into the card's {@code fieldValues} list.
+     *
+     * <p>{@code value} is always a string on the wire; a {@code null}/absent or non-string value is
+     * coerced to an empty string (the {@code value} column is {@code NOT NULL}), read defensively
+     * like every other handler here. {@code cardId}/{@code fieldId} come from the payload (parsed
+     * tolerantly via {@link #parseCardId} — a missing/garbled id is a silent no-op, never an
+     * exception); {@code boardId} comes from the destination path, never the payload.
+     *
+     * <p><strong>§3.9 — silent FK tolerance.</strong> The card or field may have been deleted
+     * concurrently (another session's {@code card:delete}/{@code boardfield:delete} between this
+     * frame arriving and the write). The {@code NOT NULL} FK to {@code card}/{@code board_field}
+     * then rejects the insert with a {@link DataIntegrityViolationException} — caught, logged at
+     * debug, and swallowed <em>without broadcasting and without rethrowing</em>, so a forged or
+     * racing frame can never crash the STOMP session. {@code saveAndFlush} forces the INSERT to hit
+     * the database inside the {@code try} (rather than deferring to transaction commit outside it),
+     * exactly the pattern {@code VoteActionService#handleStart} uses for the same reason. On success
+     * the persisted row (its DB-assigned {@code id} now populated) is broadcast.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARDFIELD_SET action
+     * @param principal the emitting principal
+     */
+    private void handleCardFieldSet(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID cardId = parseCardId(data.get("cardId"));
+        UUID fieldId = parseCardId(data.get("fieldId"));
+        if (cardId == null || fieldId == null) {
+            return;
+        }
+        String value = data.get("value") instanceof String s ? s : "";
+        CardFieldValue entity = cardFieldValueRepository.findByCardIdAndFieldId(cardId, fieldId)
+                .orElse(null);
+        if (entity != null) {
+            entity.setValue(value);
+        } else {
+            entity = new CardFieldValue(cardId, fieldId, value);
+        }
+        CardFieldValue saved;
+        try {
+            saved = cardFieldValueRepository.saveAndFlush(entity);
+        } catch (DataIntegrityViolationException e) {
+            // §3.9: the card or field was deleted concurrently — the FK rejects the write. Tolerate
+            // silently (no broadcast, no rethrow) so a racing/forged frame never crashes the session.
+            LOG.debug("Card field set tolerated FK violation (card/field concurrently removed): "
+                    + "card={} field={} board={}", cardId, fieldId, boardId);
+            return;
+        }
+        broadcast(boardId, principal, CanvasEventType.CARDFIELD_SET, toFlatMap(FieldValueDto.of(saved)));
+        LOG.debug("Card field value set: id={} card={} field={} board={}",
+                saved.getId(), cardId, fieldId, boardId);
+    }
+
+    /**
+     * Handles a CARDFIELD_CLEAR action ({@code cardfield:clear} inbound, {@code {cardId, fieldId}}):
+     * clears any {@link CardFieldValue} on the {@code (cardId, fieldId)} pair, then broadcasts
+     * {@code cardfield:cleared} carrying {@code {cardId, fieldId}} (a small map — the frontend does
+     * {@code this.on<{cardId, fieldId}>('cardfield:cleared', …)}) to the whole room, emitter
+     * included.
+     *
+     * <p><strong>Unconditional broadcast (§3.9).</strong> Unlike the {@code *:delete} handlers, this
+     * broadcasts <em>even when 0 rows were deleted</em> (the pair carried no value, or the card/field
+     * is already gone): the frontend clear is idempotent and the broadcast harmlessly clears an
+     * already-absent value on every client, keeping the room convergent. A missing/garbled
+     * {@code cardId}/{@code fieldId} is the only silent no-op. {@code boardId} comes from the
+     * destination path, never the payload.
+     *
+     * @param boardId   the board UUID
+     * @param message   the incoming CARDFIELD_CLEAR action
+     * @param principal the emitting principal
+     */
+    private void handleCardFieldClear(
+            final UUID boardId, final CanvasActionMessage message, final StompPrincipal principal) {
+        Map<String, Object> data = asMap(message.data());
+        UUID cardId = parseCardId(data.get("cardId"));
+        UUID fieldId = parseCardId(data.get("fieldId"));
+        if (cardId == null || fieldId == null) {
+            return;
+        }
+        long deleted = cardFieldValueRepository.deleteByCardIdAndFieldId(cardId, fieldId);
+        broadcast(boardId, principal, CanvasEventType.CARDFIELD_CLEAR,
+                Map.of("cardId", cardId.toString(), "fieldId", fieldId.toString()));
+        LOG.debug("Card field value cleared: card={} field={} board={} rows={}",
+                cardId, fieldId, boardId, deleted);
+    }
+
     /**
      * Serialises an incoming {@code options} value (expected: a JSON array of strings) to its JSON
      * string form for the {@link BoardField#getOptions()} JSONB column. Returns {@code null} — the
@@ -1864,7 +1969,17 @@ public class CanvasActionService {
 
     /**
      * Maps a persisted {@link Card} to its wire {@link CardDto}, parsing the opaque {@code meta}
-     * JSONB column (if present) into a generic map.
+     * JSONB column (if present) into a generic map and loading the card's custom field values
+     * (US08.10.2) so every {@code card:*}/{@code board:state} shape carries the card's
+     * {@code fieldValues} — otherwise a value set in one session would vanish for a late joiner
+     * (whose {@code board:state} would omit it).
+     *
+     * <p>The values are loaded with one {@link CardFieldValueRepository#findByCardId} query per
+     * card. On JOIN's {@code board:state} — the only place {@code toDto} maps a whole list — this is
+     * a per-card query (an N+1 over the board's cards); accepted for this Socle, consistent with the
+     * per-card {@code meta} JSON parse already done here, and cheap given the small card counts and
+     * the {@code idx_card_field_value_field} / PK-backed lookups. A single broadcast (card:created
+     * just-inserted → empty list, card:updated → its values) is a single extra query.
      *
      * @param card the persisted card
      * @return the corresponding {@link CardDto}
@@ -1879,10 +1994,14 @@ public class CanvasActionService {
                 LOG.warn("Could not parse card meta JSON: cardId={} error={}", card.getId(), e.getMessage());
             }
         }
+        List<FieldValueDto> fieldValues = cardFieldValueRepository.findByCardId(card.getId())
+                .stream()
+                .map(FieldValueDto::of)
+                .toList();
         return CardDto.of(
                 card.getId(), card.getType().name(), card.getContent(), meta,
                 card.getPosX(), card.getPosY(), card.getWidth(), card.getHeight(), card.getColor(),
-                card.getGroupId(), card.getGroupColor(), card.isLocked(), card.getLayer());
+                card.getGroupId(), card.getGroupColor(), card.isLocked(), card.getLayer(), fieldValues);
     }
 
     /**

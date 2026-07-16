@@ -137,7 +137,19 @@ public enum CanvasEventType {
     BOARDFIELD_UPDATE("boardfield:update", "boardfield:updated"),
     /** Deletes an existing {@link BoardField} (its card values cascade away); echoes the bare id
      * string ({@code boardfield:deleted}), mirroring card:deleted (US08.10.1). */
-    BOARDFIELD_DELETE("boardfield:delete", "boardfield:deleted");
+    BOARDFIELD_DELETE("boardfield:delete", "boardfield:deleted"),
+    /** Sets (upserts) a {@link CardFieldValue} — one card's value for one {@link BoardField},
+     * unique per {@code (card, field)} pair. Inbound {@code cardfield:set} carries
+     * {@code {cardId, fieldId, value}}; echoes the full flat value ({@code cardfield:updated})
+     * carrying {@code {id, cardId, fieldId, value}} to the whole room (US08.10.2). Note the
+     * present/past wire asymmetry — the frontend sends {@code cardfield:set} but listens for
+     * {@code cardfield:updated}. */
+    CARDFIELD_SET("cardfield:set", "cardfield:updated"),
+    /** Clears a {@link CardFieldValue} for a {@code (card, field)} pair. Inbound
+     * {@code cardfield:clear} carries {@code {cardId, fieldId}}; echoes {@code cardfield:cleared}
+     * carrying {@code {cardId, fieldId}} unconditionally — even when no value was stored
+     * (US08.10.2, §3.9). Present/past wire asymmetry, like {@link #CARDFIELD_SET}. */
+    CARDFIELD_CLEAR("cardfield:clear", "cardfield:cleared");
 
     private static final Map<String, CanvasEventType> BY_WIRE_IN = Stream.of(values())
             .collect(Collectors.toMap(t -> t.wireIn.toLowerCase(Locale.ROOT), t -> t));
