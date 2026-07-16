@@ -1239,19 +1239,15 @@ public class CanvasActionService {
 
     /**
      * Handles a FRAME_DELETE action ({@code frame:delete} inbound): deletes a frame scoped by
-     * board, then broadcasts {@code frame:deleted} carrying {@code {id}} — mirroring this
-     * branch's {@code card:deleted} shape exactly (see {@link #handleCardDelete}). Idempotent:
-     * deleting an id that does not exist (already deleted, on another board, or never existed)
-     * is a silent no-op, never an exception.
+     * board, then broadcasts {@code frame:deleted} carrying the <em>bare id string</em> —
+     * mirroring {@code card:deleted}/{@code connection:deleted} under the post-{@code #84} wire
+     * envelope (see {@link #handleCardDelete}). Idempotent: deleting an id that does not exist
+     * (already deleted, on another board, or never existed) is a silent no-op, never an exception.
      *
      * <p><strong>Wire-contract note.</strong> The frontend ({@code board.store.ts}) subscribes
-     * with {@code this.on<string>('frame:deleted', id => …)} — i.e. it expects a <em>bare id
-     * string</em>, not an {@code {id}} object. This branch deliberately emits the {@code {id}}
-     * object to stay identical to {@code card:deleted}/{@code connection:deleted} as they exist
-     * on this branch (the frontend is uniformly written for the post-{@code #84} envelope, where
-     * every {@code *:deleted} becomes a bare string). Once {@code #84} (the wire-envelope PR)
-     * lands, this line flips to {@code broadcast(..., id.toString())} together with the card and
-     * connection deletes — a single mechanical change, made consistently across all three.
+     * with {@code this.on<string>('frame:deleted', id => …)} — i.e. it expects a bare id string,
+     * not an {@code {id}} object. Since {@code #84} (the wire-envelope PR) merged, every
+     * {@code *:deleted} broadcast emits the bare string id; this handler follows suit.
      *
      * @param boardId   the board UUID
      * @param message   the incoming FRAME_DELETE action
@@ -1267,7 +1263,7 @@ public class CanvasActionService {
             LOG.debug("Frame delete no-op (already deleted or cross-board): id={} board={}", id, boardId);
             return;
         }
-        broadcast(boardId, principal, CanvasEventType.FRAME_DELETE, Map.of("id", id.toString()));
+        broadcast(boardId, principal, CanvasEventType.FRAME_DELETE, id.toString());
     }
 
     /**
