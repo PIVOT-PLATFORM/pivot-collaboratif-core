@@ -5,6 +5,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.util.concurrent.ThreadPoolExecutor;
+
 /**
  * Provides a small, bounded thread pool dedicated to off-thread persistence of {@code DRAW}
  * canvas events (see {@link CanvasEventWriter}). {@code @EnableAsync} is already switched on
@@ -36,6 +38,13 @@ class CanvasEventAsyncConfig {
         executor.setMaxPoolSize(MAX_POOL_SIZE);
         executor.setQueueCapacity(QUEUE_CAPACITY);
         executor.setThreadNamePrefix("canvas-evt-");
+        // Shed silently when saturated instead of the default AbortPolicy. Spring submits a
+        // void @Async task on the CALLING (STOMP handler) thread, so AbortPolicy would surface a
+        // TaskRejectedException on the hot path when a slow DB fills the queue — exactly the
+        // user-visible failure this off-thread writer exists to avoid. These DRAW rows are read on
+        // no production path (replay-on-join unwired), so discarding the overflow is the documented,
+        // acceptable failure mode.
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
         executor.initialize();
         return executor;
     }
