@@ -1,6 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -69,4 +70,18 @@ public interface CardConnectionRepository extends JpaRepository<CardConnection, 
      * @return the number of rows deleted (0 or 1)
      */
     long deleteByIdAndBoardId(UUID id, UUID boardId);
+
+    /**
+     * Deletes every connector of a board, scoped by tenant (defence-in-depth cross-tenant
+     * guard). Backs the destructive {@code board:reset} STOMP action
+     * ({@link CanvasActionService#handleBoardReset}); run before the card deletion so no card
+     * still referenced by a connector is removed out from under it.
+     *
+     * @param boardId  the owning board UUID
+     * @param tenantId the owning tenant's {@code public.tenants.id}
+     * @return the number of rows deleted
+     */
+    @Modifying
+    @Query("DELETE FROM CardConnection c WHERE c.boardId = :boardId AND c.tenantId = :tenantId")
+    long deleteAllByBoardIdAndTenantId(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
 }

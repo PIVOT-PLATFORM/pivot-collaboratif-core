@@ -42,6 +42,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -140,15 +141,15 @@ class VoteActionIT {
 
         BroadcastCanvasMessage started = poll(queue);
         assertThat(started.type()).isEqualTo("vote:session:started");
-        assertThat(started.data().get("status")).isEqualTo("ACTIVE");
-        assertThat(((Number) started.data().get("votesPerPerson")).intValue()).isEqualTo(3);
-        assertThat(((Number) started.data().get("timerSeconds")).intValue()).isEqualTo(120);
-        assertThat(started.data().get("timerEndsAt")).isNotNull();
-        List<?> voterIds = (List<?>) started.data().get("voterIds");
+        assertThat(map(started).get("status")).isEqualTo("ACTIVE");
+        assertThat(((Number) map(started).get("votesPerPerson")).intValue()).isEqualTo(3);
+        assertThat(((Number) map(started).get("timerSeconds")).intValue()).isEqualTo(120);
+        assertThat(map(started).get("timerEndsAt")).isNotNull();
+        List<?> voterIds = (List<?>) map(started).get("voterIds");
         assertThat(voterIds).hasSize(1);
         assertThat(voterIds.get(0)).isEqualTo(String.valueOf(ownerId));
-        assertThat((List<?>) started.data().get("votes")).isEmpty();
-        String sessionId = (String) started.data().get("id");
+        assertThat((List<?>) map(started).get("votes")).isEmpty();
+        String sessionId = (String) map(started).get("id");
 
         // vote:cast → vote:updated, one dot
         session.send("/app/whiteboard/" + board.getId() + "/action",
@@ -157,7 +158,7 @@ class VoteActionIT {
                         "cardId", card.getId().toString())));
         BroadcastCanvasMessage afterCast = poll(queue);
         assertThat(afterCast.type()).isEqualTo("vote:updated");
-        List<?> votes = (List<?>) afterCast.data().get("votes");
+        List<?> votes = (List<?>) map(afterCast).get("votes");
         assertThat(votes).hasSize(1);
         @SuppressWarnings("unchecked")
         Map<String, Object> firstVote = (Map<String, Object>) votes.get(0);
@@ -172,7 +173,7 @@ class VoteActionIT {
                         "cardId", card.getId().toString())));
         BroadcastCanvasMessage afterUncast = poll(queue);
         assertThat(afterUncast.type()).isEqualTo("vote:updated");
-        assertThat((List<?>) afterUncast.data().get("votes")).isEmpty();
+        assertThat((List<?>) map(afterUncast).get("votes")).isEmpty();
 
         // vote:stop → vote:session:closed
         session.send("/app/whiteboard/" + board.getId() + "/action",
@@ -180,8 +181,8 @@ class VoteActionIT {
                         "sessionId", sessionId, "boardId", board.getId().toString())));
         BroadcastCanvasMessage closed = poll(queue);
         assertThat(closed.type()).isEqualTo("vote:session:closed");
-        assertThat(closed.data().get("status")).isEqualTo("CLOSED");
-        assertThat(closed.data().get("closedAt")).isNotNull();
+        assertThat(map(closed).get("status")).isEqualTo("CLOSED");
+        assertThat(map(closed).get("closedAt")).isNotNull();
 
         // The vote:session:closed broadcast can reach the client just before the server
         // transaction commits, so poll the durable state rather than reading it once.
@@ -209,7 +210,7 @@ class VoteActionIT {
                 Map.of("type", "vote:start", "data", Map.of(
                         "boardId", board.getId().toString(), "votesPerPerson", 2,
                         "voterIds", List.of(String.valueOf(ownerId)))));
-        String sessionId = (String) poll(queue).data().get("id");
+        String sessionId = (String) map(poll(queue)).get("id");
 
         // Two casts on the same card — dots stack (no unique(session,card,user) constraint).
         castAndAwait(session, board.getId(), sessionId, card.getId(), queue);
@@ -258,7 +259,7 @@ class VoteActionIT {
         owner.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "vote:start", "data", Map.of(
                         "boardId", board.getId().toString(), "votesPerPerson", 1, "voterIds", List.of())));
-        String sessionId = (String) poll(ownerQueue).data().get("id");
+        String sessionId = (String) map(poll(ownerQueue)).get("id");
 
         viewer.send("/app/whiteboard/" + board.getId() + "/action",
                 Map.of("type", "vote:stop", "data", Map.of(

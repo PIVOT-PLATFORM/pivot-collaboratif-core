@@ -39,6 +39,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -131,8 +132,7 @@ class WhiteboardLabelCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:created");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("LABEL");
         assertThat(cardData.get("content")).isEqualTo("Sprint 12");
         assertThat(((Number) cardData.get("width")).doubleValue()).isEqualTo(192.0);
@@ -248,7 +248,7 @@ class WhiteboardLabelCardIT {
         // subscribed session receiving this frame is exactly that assertion.
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:updated");
-        assertThat(msg.data().get("content")).isEqualTo("");
+        assertThat(map(msg).get("content")).isEqualTo("");
 
         Card reloaded = cardRepository.findById(card.getId()).orElseThrow();
         assertThat(reloaded.getContent()).isEmpty();
@@ -346,7 +346,8 @@ class WhiteboardLabelCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:deleted");
-        assertThat(msg.data().get("id")).isEqualTo(card.getId().toString());
+        // card:deleted carries the bare id string as data (P2), not an { id } object.
+        assertThat(msg.data()).isEqualTo(card.getId().toString());
 
         // The broadcast is sent from inside handleCardDelete's @Transactional method, before
         // the transaction actually commits — give it a moment to flush, same pattern as

@@ -40,6 +40,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static fr.pivot.collaboratif.whiteboard.canvas.BroadcastPayloads.map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -126,8 +127,7 @@ class WhiteboardImageCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:created");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> cardData = (Map<String, Object>) msg.data().get("card");
+        Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("IMAGE");
         assertThat((String) cardData.get("content")).startsWith("data:image/png;base64,");
 
@@ -259,7 +259,7 @@ class WhiteboardImageCardIT {
 
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         assertThat(msg.type()).isEqualTo("card:updated");
-        assertThat((String) msg.data().get("content")).startsWith("data:image/png;base64,");
+        assertThat((String) map(msg).get("content")).startsWith("data:image/png;base64,");
 
         Card reloaded = cardRepository.findById(image.getId()).orElseThrow();
         assertThat(reloaded.getContent()).startsWith("data:image/png;base64,");

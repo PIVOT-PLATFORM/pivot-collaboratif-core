@@ -181,6 +181,74 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
             @Param("layer") int layer);
 
     /**
+     * Locks or unlocks every card in {@code ids} that belongs to {@code boardId}, in a single
+     * bulk update (card:lock, parity spec §4.x). Scoping by {@code boardId} keeps a leaked or
+     * guessed cross-board id inert. Not guarded by the current {@code locked} value — locking is
+     * idempotent and unlocking must always be able to reach an already-locked card.
+     *
+     * @param ids     the card ids to (un)lock
+     * @param boardId the owning board UUID
+     * @param locked  the new locked state
+     * @return the number of rows affected
+     */
+    @Modifying
+    @Query("UPDATE Card c SET c.locked = :locked, c.updatedAt = CURRENT_TIMESTAMP "
+            + "WHERE c.id IN :ids AND c.boardId = :boardId")
+    int lockCards(
+            @Param("ids") Collection<UUID> ids,
+            @Param("boardId") UUID boardId,
+            @Param("locked") boolean locked);
+
+    /**
+     * Assigns {@code groupId} to every card in {@code ids} that belongs to {@code boardId}, in a
+     * single bulk update (cards:group). The {@code groupId} is generated server-side by
+     * {@link CanvasActionService#handleCardsGroup} — never client-supplied.
+     *
+     * @param ids     the card ids to group
+     * @param boardId the owning board UUID
+     * @param groupId the server-assigned group UUID
+     * @return the number of rows affected
+     */
+    @Modifying
+    @Query("UPDATE Card c SET c.groupId = :groupId, c.updatedAt = CURRENT_TIMESTAMP "
+            + "WHERE c.id IN :ids AND c.boardId = :boardId")
+    int groupCards(
+            @Param("ids") Collection<UUID> ids,
+            @Param("boardId") UUID boardId,
+            @Param("groupId") UUID groupId);
+
+    /**
+     * Clears the group assignment ({@code group_id} and {@code group_color}) of every card of
+     * {@code boardId} currently in {@code groupId} (cards:ungroup). Scoped by {@code boardId} so a
+     * cross-board group id cannot dissolve another board's group.
+     *
+     * @param groupId the group UUID to dissolve
+     * @param boardId the owning board UUID
+     * @return the number of rows affected
+     */
+    @Modifying
+    @Query("UPDATE Card c SET c.groupId = null, c.groupColor = null, c.updatedAt = CURRENT_TIMESTAMP "
+            + "WHERE c.groupId = :groupId AND c.boardId = :boardId")
+    int ungroupByGroupId(@Param("groupId") UUID groupId, @Param("boardId") UUID boardId);
+
+    /**
+     * Recolors the outline ({@code group_color}) of every card of {@code boardId} in
+     * {@code groupId} (cards:group-color).
+     *
+     * @param groupId    the group UUID to recolor
+     * @param boardId    the owning board UUID
+     * @param groupColor the new group outline hex colour
+     * @return the number of rows affected
+     */
+    @Modifying
+    @Query("UPDATE Card c SET c.groupColor = :groupColor, c.updatedAt = CURRENT_TIMESTAMP "
+            + "WHERE c.groupId = :groupId AND c.boardId = :boardId")
+    int recolorGroup(
+            @Param("groupId") UUID groupId,
+            @Param("boardId") UUID boardId,
+            @Param("groupColor") String groupColor);
+
+    /**
      * Deletes a card scoped by board ownership. Not guarded by lock state <strong>at the query
      * level</strong> — there is no row left to condition an {@code UPDATE}-style {@code WHERE
      * locked = false} on once it is gone — the caller ({@link CanvasActionService#handleCardDelete})
@@ -194,4 +262,18 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
      * @return the number of rows deleted (0 or 1)
      */
     long deleteByIdAndBoardId(UUID id, UUID boardId);
+
+    /**
+     * Deletes every card of a board, scoped by tenant (defence-in-depth cross-tenant guard).
+     * Backs the destructive {@code board:reset} STOMP action
+     * ({@link CanvasActionService#handleBoardReset}) — the OWNER-only, atomic "clear the whole
+     * board" operation mirroring the reference whiteboard's reset.
+     *
+     * @param boardId  the owning board UUID
+     * @param tenantId the owning tenant's {@code public.tenants.id}
+     * @return the number of rows deleted
+     */
+    @Modifying
+    @Query("DELETE FROM Card c WHERE c.boardId = :boardId AND c.tenantId = :tenantId")
+    long deleteAllByBoardIdAndTenantId(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
 }

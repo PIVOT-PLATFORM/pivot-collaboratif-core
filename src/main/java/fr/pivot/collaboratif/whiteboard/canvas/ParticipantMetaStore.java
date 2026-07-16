@@ -10,6 +10,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -72,6 +73,30 @@ public class ParticipantMetaStore {
      */
     public void remove(final Long tenantId, final UUID boardId, final Long userId) {
         redisTemplate.opsForHash().delete(metaKey(tenantId, boardId), userId.toString());
+    }
+
+    /**
+     * Returns a single participant's stored metadata, if present — used to enrich high-frequency
+     * ephemeral broadcasts (cursor moves, concurrent-editing signals) with the mover's display
+     * name/avatar without scanning the whole board hash.
+     *
+     * @param tenantId tenant's {@code public.tenants.id}
+     * @param boardId  board UUID
+     * @param userId   the {@code public.users.id} of the participant to look up
+     * @return the participant info, or empty if the user is not currently present or the entry
+     *     could not be deserialised
+     */
+    public Optional<ParticipantInfo> get(final Long tenantId, final UUID boardId, final Long userId) {
+        Object value = redisTemplate.opsForHash().get(metaKey(tenantId, boardId), userId.toString());
+        if (value == null) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(objectMapper.readValue(value.toString(), ParticipantInfo.class));
+        } catch (Exception e) {
+            LOG.warn("Failed to deserialise participant meta for user={} board={}: {}", userId, boardId, e.getMessage());
+            return Optional.empty();
+        }
     }
 
     /**
