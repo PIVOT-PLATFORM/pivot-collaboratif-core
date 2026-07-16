@@ -144,7 +144,9 @@ class VoteActionIT {
         assertThat(((Number) started.data().get("votesPerPerson")).intValue()).isEqualTo(3);
         assertThat(((Number) started.data().get("timerSeconds")).intValue()).isEqualTo(120);
         assertThat(started.data().get("timerEndsAt")).isNotNull();
-        assertThat((List<?>) started.data().get("voterIds")).containsExactly(String.valueOf(ownerId));
+        List<?> voterIds = (List<?>) started.data().get("voterIds");
+        assertThat(voterIds).hasSize(1);
+        assertThat(voterIds.get(0)).isEqualTo(String.valueOf(ownerId));
         assertThat((List<?>) started.data().get("votes")).isEmpty();
         String sessionId = (String) started.data().get("id");
 
