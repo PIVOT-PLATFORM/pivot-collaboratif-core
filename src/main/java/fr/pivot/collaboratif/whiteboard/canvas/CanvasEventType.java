@@ -101,7 +101,20 @@ public enum CanvasEventType {
     CONNECTION_DELETE("connection:delete", "connection:deleted"),
     /** Applies a partial style patch to an existing {@link CardConnection} — only the fields
      * present in the incoming payload are mutated (US08.7.2). */
-    CONNECTION_UPDATE("connection:update", "connection:updated");
+    CONNECTION_UPDATE("connection:update", "connection:updated"),
+    /** Creates a new {@link Frame} container (EN08, Frames); echoes the full flat frame. */
+    FRAME_CREATE("frame:create", "frame:created"),
+    /** Moves an existing {@link Frame}; echoes the full flat frame (EN08, Frames). */
+    FRAME_MOVE("frame:move", "frame:moved"),
+    /** Resizes an existing {@link Frame} (and optionally moves it); echoes the full flat frame. */
+    FRAME_RESIZE("frame:resize", "frame:resized"),
+    /** Updates an existing {@link Frame}'s title/active/color (partial patch); echoes the full flat frame. */
+    FRAME_UPDATE("frame:update", "frame:updated"),
+    /** Deletes an existing {@link Frame}; echoes {@code {id}} (mirrors this branch's card:deleted;
+     * flips to a bare id string when the #84 wire-envelope PR lands — see handleFrameDelete). */
+    FRAME_DELETE("frame:delete", "frame:deleted"),
+    /** Changes an existing {@link Frame}'s Z-order layer; echoes {@code {id, layer}} (EN08, Frames). */
+    FRAME_LAYER("frame:layer", "frame:layered");
 
     private static final Map<String, CanvasEventType> BY_WIRE_IN = Stream.of(values())
             .collect(Collectors.toMap(t -> t.wireIn.toLowerCase(Locale.ROOT), t -> t));
