@@ -1,5 +1,6 @@
 package fr.pivot.collaboratif.whiteboard.canvas.dto;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -23,6 +24,11 @@ import java.util.UUID;
  * @param groupColor the group outline hex colour, or {@code null}
  * @param locked     whether the card is locked
  * @param layer      the Z-order layer
+ * @param fieldValues the card's custom field values (US08.10.2), one per set
+ *                    {@link fr.pivot.collaboratif.whiteboard.canvas.BoardField}; empty (never
+ *                    {@code null}) when none are set — carried in {@code board:state} so a late
+ *                    joiner sees values set in another session, matching the frontend's
+ *                    {@code Card.fieldValues}
  */
 public record CardDto(
         String id,
@@ -37,7 +43,8 @@ public record CardDto(
         String groupId,
         String groupColor,
         boolean locked,
-        int layer) {
+        int layer,
+        List<FieldValueDto> fieldValues) {
 
     /**
      * Builds a {@link CardDto} from a persisted card and its already-parsed {@code meta}.
@@ -55,6 +62,7 @@ public record CardDto(
      * @param groupColor the group outline colour, or {@code null}
      * @param locked     whether locked
      * @param layer      the layer
+     * @param fieldValues the card's custom field values (empty, never {@code null}, when none set)
      * @return a new {@link CardDto}
      */
     public static CardDto of(
@@ -70,9 +78,10 @@ public record CardDto(
             final UUID groupId,
             final String groupColor,
             final boolean locked,
-            final int layer) {
+            final int layer,
+            final List<FieldValueDto> fieldValues) {
         return new CardDto(
                 id.toString(), type, content, meta, posX, posY, width, height, color,
-                groupId != null ? groupId.toString() : null, groupColor, locked, layer);
+                groupId != null ? groupId.toString() : null, groupColor, locked, layer, fieldValues);
     }
 }

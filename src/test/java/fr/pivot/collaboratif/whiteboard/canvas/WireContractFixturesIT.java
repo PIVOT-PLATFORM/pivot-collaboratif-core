@@ -4,6 +4,7 @@ import fr.pivot.collaboratif.testsupport.PlatformAuthTestSupport;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardConnectionDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CardDto;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.FieldValueDto;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantInfo;
 import fr.pivot.collaboratif.whiteboard.canvas.dto.ParticipantsUpdatePayload;
 import org.junit.jupiter.api.Test;
@@ -194,7 +195,12 @@ class WireContractFixturesIT {
                 "a1a1a1a1-0000-4000-8000-000000000002",
                 "#9C27B0",
                 false,
-                3);
+                3,
+                List.of(new FieldValueDto(
+                        "d1d1d1d1-0000-4000-8000-000000000001",
+                        "a1a1a1a1-0000-4000-8000-000000000001",
+                        "e1e1e1e1-0000-4000-8000-000000000001",
+                        "In progress")));
     }
 
     /**
