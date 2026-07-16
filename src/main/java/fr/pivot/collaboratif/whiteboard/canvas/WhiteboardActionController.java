@@ -1,6 +1,7 @@
 package fr.pivot.collaboratif.whiteboard.canvas;
 
 import fr.pivot.collaboratif.whiteboard.canvas.dto.CanvasActionMessage;
+import fr.pivot.collaboratif.whiteboard.vote.VoteActionService;
 import fr.pivot.collaboratif.whiteboard.ws.StompPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,21 +29,37 @@ import java.util.UUID;
  *
  * <p>Unknown message types are caught in {@link CanvasActionService#handle} with a
  * WARN log and silent drop (no session closure, no error frame).
+ *
+ * <p><strong>Vote routing.</strong> Every {@code vote:*} action ({@code vote:start},
+ * {@code vote:cast}, {@code vote:uncast}, {@code vote:stop}, {@code vote:extend}) is delegated to
+ * {@link VoteActionService} rather than {@link CanvasActionService} — the dot-voting feature owns
+ * its own dispatcher so the (already large) canvas dispatcher does not grow further. Both paths
+ * receive the same authenticated, board-authorised, non-rate-limited frame (the upstream
+ * {@link fr.pivot.collaboratif.whiteboard.ws.WhiteboardChannelInterceptor} gates by destination,
+ * which is identical for both).
  */
 @Controller
 public class WhiteboardActionController {
 
     private static final Logger LOG = LoggerFactory.getLogger(WhiteboardActionController.class);
 
+    /** Prefix identifying dot-voting actions routed to {@link VoteActionService}. */
+    private static final String VOTE_TYPE_PREFIX = "vote:";
+
     private final CanvasActionService canvasActionService;
+    private final VoteActionService voteActionService;
 
     /**
      * Creates the controller.
      *
-     * @param canvasActionService the canvas action service handling all business logic
+     * @param canvasActionService the canvas action service handling all canvas business logic
+     * @param voteActionService   the vote action service handling all {@code vote:*} business logic
      */
-    public WhiteboardActionController(final CanvasActionService canvasActionService) {
+    public WhiteboardActionController(
+            final CanvasActionService canvasActionService,
+            final VoteActionService voteActionService) {
         this.canvasActionService = canvasActionService;
+        this.voteActionService = voteActionService;
     }
 
     /**
@@ -67,6 +84,10 @@ public class WhiteboardActionController {
             @Header("simpSessionId") final String sessionId) {
         if (!(principal instanceof StompPrincipal stompPrincipal)) {
             LOG.warn("Received canvas action without StompPrincipal — board={}", boardId);
+            return;
+        }
+        if (message.type() != null && message.type().startsWith(VOTE_TYPE_PREFIX)) {
+            voteActionService.handle(boardId, message, stompPrincipal);
             return;
         }
         canvasActionService.handle(boardId, message, stompPrincipal, sessionId);
