@@ -360,7 +360,11 @@ class BoardServiceTest {
         when(boardRepository.findAccessibleByUser(eq(USER_A), eq(TENANT_A), isNull(), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(board)));
         when(boardFavoriteRepository.findFavoritedBoardIds(eq(USER_A), any())).thenReturn(List.of());
-        when(boardMemberRepository.countByIdBoardIdAndRoleNot(boardId, BoardRole.OWNER)).thenReturn(2L);
+        BoardMemberRepository.BoardShareCount shareRow = mock(BoardMemberRepository.BoardShareCount.class);
+        when(shareRow.getBoardId()).thenReturn(boardId);
+        when(shareRow.getShareCount()).thenReturn(2L);
+        when(boardMemberRepository.countSharesGroupedByBoard(any(), eq(BoardRole.OWNER)))
+                .thenReturn(List.of(shareRow));
 
         BoardPageResponse page = boardService.findAccessible(USER_A, TENANT_A, null, 0, 20);
 

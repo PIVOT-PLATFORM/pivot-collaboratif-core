@@ -253,11 +253,18 @@ class WhiteboardCanvasIT {
         // Wait for broadcast to confirm message was processed
         drawFuture.get(5, TimeUnit.SECONDS);
 
-        // Allow a brief moment for the transactional save to commit
-        Thread.sleep(200);
-
-        List<CanvasEvent> events = canvasEventRepository
-                .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(board.getId(), tenantId);
+        // DRAW persistence is asynchronous (CanvasEventWriter, off the STOMP thread), so poll until
+        // the event has committed rather than assuming a fixed delay.
+        List<CanvasEvent> events = List.of();
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (System.currentTimeMillis() < deadline) {
+            events = canvasEventRepository
+                    .findAllByBoardIdAndTenantIdOrderByCreatedAtAsc(board.getId(), tenantId);
+            if (!events.isEmpty()) {
+                break;
+            }
+            Thread.sleep(50);
+        }
         assertThat(events).hasSize(1);
         assertThat(events.get(0).getEventType()).isEqualTo(CanvasEventType.DRAW);
         assertThat(events.get(0).getUserId()).isEqualTo(ownerId);

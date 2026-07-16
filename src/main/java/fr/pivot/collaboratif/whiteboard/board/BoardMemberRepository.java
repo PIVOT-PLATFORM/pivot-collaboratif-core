@@ -1,8 +1,12 @@
 package fr.pivot.collaboratif.whiteboard.board;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -41,4 +45,41 @@ public interface BoardMemberRepository extends JpaRepository<BoardMember, BoardM
      * @return the number of members on this board holding a role other than {@code excludedRole}
      */
     long countByIdBoardIdAndRoleNot(UUID boardId, BoardRole excludedRole);
+
+    /**
+     * Batch variant of {@link #findByIdBoardIdAndIdUserId} for a whole page of boards: returns the
+     * caller's membership row on each of {@code boardIds} they belong to, in one query — used to
+     * resolve every caller role for a board listing without an N+1 query per row. Boards the caller
+     * only owns (no membership row beyond the OWNER seed) still return their row; boards with no
+     * matching membership are simply absent from the result.
+     *
+     * @param boardIds the candidate board UUIDs (typically the ids of a single page)
+     * @param userId   the caller's {@code public.users.id}
+     * @return the caller's membership rows among {@code boardIds}
+     */
+    List<BoardMember> findAllByIdBoardIdInAndIdUserId(Set<UUID> boardIds, Long userId);
+
+    /**
+     * Batch variant of {@link #countByIdBoardIdAndRoleNot} for a whole page of boards: returns the
+     * active-share count (members holding a role other than {@code excludedRole}) grouped per board,
+     * in one query — used to enrich a board listing without an N+1 count per row. Boards with zero
+     * shares are absent from the result (callers must default them to {@code 0}).
+     *
+     * @param boardIds     the candidate board UUIDs (typically the ids of a single page)
+     * @param excludedRole the role to exclude from the count (the owner's role)
+     * @return one {@link BoardShareCount} per board that has at least one active share
+     */
+    @Query("SELECT m.id.boardId AS boardId, COUNT(m) AS shareCount FROM BoardMember m "
+            + "WHERE m.id.boardId IN :boardIds AND m.role <> :excludedRole GROUP BY m.id.boardId")
+    List<BoardShareCount> countSharesGroupedByBoard(
+            @Param("boardIds") Set<UUID> boardIds, @Param("excludedRole") BoardRole excludedRole);
+
+    /** Projection for {@link #countSharesGroupedByBoard}: a board id and its active-share count. */
+    interface BoardShareCount {
+        /** @return the board UUID */
+        UUID getBoardId();
+
+        /** @return the number of active shares (members other than the owner) on the board */
+        long getShareCount();
+    }
 }
