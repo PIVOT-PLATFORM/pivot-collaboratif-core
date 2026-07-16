@@ -28,5 +28,8 @@
   { "name": "FRAME_LAYER", "wireIn": "frame:layer", "wireOut": "frame:layered" },
   { "name": "TIMER_START", "wireIn": "timer:start", "wireOut": "timer:started" },
   { "name": "TIMER_STOP", "wireIn": "timer:stop", "wireOut": "timer:stopped" },
-  { "name": "BOARD_RESET", "wireIn": "board:reset", "wireOut": "board:resetted" }
+  { "name": "BOARD_RESET", "wireIn": "board:reset", "wireOut": "board:resetted" },
+  { "name": "BOARDFIELD_CREATE", "wireIn": "boardfield:create", "wireOut": "boardfield:created" },
+  { "name": "BOARDFIELD_UPDATE", "wireIn": "boardfield:update", "wireOut": "boardfield:updated" },
+  { "name": "BOARDFIELD_DELETE", "wireIn": "boardfield:delete", "wireOut": "boardfield:deleted" }
 ]
