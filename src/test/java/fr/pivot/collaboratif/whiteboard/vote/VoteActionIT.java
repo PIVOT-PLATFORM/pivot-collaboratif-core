@@ -183,9 +183,9 @@ class VoteActionIT {
         assertThat(closed.data().get("status")).isEqualTo("CLOSED");
         assertThat(closed.data().get("closedAt")).isNotNull();
 
-        assertThat(voteSessionRepository.findById(UUID.fromString(sessionId)))
-                .get()
-                .satisfies(s -> assertThat(s.getStatus()).isEqualTo(VoteStatus.CLOSED));
+        // The vote:session:closed broadcast can reach the client just before the server
+        // transaction commits, so poll the durable state rather than reading it once.
+        awaitSessionStatus(sessionId, VoteStatus.CLOSED);
     }
 
     // =========================================================================
@@ -214,7 +214,7 @@ class VoteActionIT {
         // Two casts on the same card — dots stack (no unique(session,card,user) constraint).
         castAndAwait(session, board.getId(), sessionId, card.getId(), queue);
         castAndAwait(session, board.getId(), sessionId, card.getId(), queue);
-        assertThat(voteRepository.countBySessionIdAndUserId(UUID.fromString(sessionId), ownerId)).isEqualTo(2);
+        awaitVoteCount(sessionId, ownerId, 2);
 
         // Third cast is past the quota (2) — dropped, no broadcast, DB unchanged.
         session.send("/app/whiteboard/" + board.getId() + "/action",
@@ -287,6 +287,39 @@ class VoteActionIT {
         BroadcastCanvasMessage msg = queue.poll(5, TimeUnit.SECONDS);
         assertThat(msg).as("expected a broadcast within 5s").isNotNull();
         return msg;
+    }
+
+    /**
+     * Polls the durable session status until it reaches {@code expected} (or times out) — the
+     * server broadcasts within its transaction, so a direct DB read right after receiving a
+     * broadcast can otherwise race the commit.
+     */
+    private void awaitSessionStatus(final String sessionId, final VoteStatus expected) throws Exception {
+        UUID id = UUID.fromString(sessionId);
+        for (int i = 0; i < 40; i++) {
+            VoteStatus status = voteSessionRepository.findById(id).map(VoteSession::getStatus).orElse(null);
+            if (status == expected) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        assertThat(voteSessionRepository.findById(id).map(VoteSession::getStatus).orElse(null))
+                .isEqualTo(expected);
+    }
+
+    /**
+     * Polls the durable per-user vote count until it reaches {@code expected} (or times out) —
+     * same broadcast-before-commit rationale as {@link #awaitSessionStatus}.
+     */
+    private void awaitVoteCount(final String sessionId, final long userId, final long expected) throws Exception {
+        UUID id = UUID.fromString(sessionId);
+        for (int i = 0; i < 40; i++) {
+            if (voteRepository.countBySessionIdAndUserId(id, userId) == expected) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        assertThat(voteRepository.countBySessionIdAndUserId(id, userId)).isEqualTo(expected);
     }
 
     private StompSession connectAs(final String rawToken) throws Exception {
