@@ -11,13 +11,14 @@ import java.util.regex.Pattern;
  * closed, applicative set of accepted values before persistence (US08.6.3, correctif §6.4).
  *
  * <p><strong>Wire format.</strong> A SHAPE card's {@code content} is the pipe-delimited string
- * {@code '{kind}|{stroke}|{fill}|{opacity}|{rotation}'} — <strong>not</strong> JSON. This is
+ * {@code '{kind}|{stroke}|{fill}|{opacity}|{rotation}|{diag}'} — <strong>not</strong> JSON. This is
  * the exact encoding already shipped and load-bearing on the frontend
  * (`pivot-collaboratif-ui`'s {@code model/shape.ts}, ported byte-compatible from the PouetPouet
  * reference's {@code board-card-shape.tsx}); this sanitiser conforms to that existing contract
  * rather than inventing a JSON schema the frontend would not understand. {@code kind} ∈
  * {@code {rect, circle, diamond, triangle, line, star}}; {@code fill} is either a hex colour or
- * the literal {@code "none"}.
+ * the literal {@code "none"}; {@code diag} ∈ {@code {tlbr, bltr}} tells which diagonal of its box
+ * a {@code line} runs along, and is meaningless for every other kind.
  *
  * <p>The reference whiteboard (PouetPouet) leaves the equivalent connector style attributes
  * ({@code shape}/{@code arrow}) as free, unconstrained strings in its database (parity spec
@@ -39,11 +40,18 @@ public class ShapeStyleSanitizer {
     /** Finite, whitelisted set of shape kinds — mirrors the frontend's {@code ShapeKind}. */
     static final Set<String> ALLOWED_KINDS = Set.of("rect", "circle", "diamond", "triangle", "line", "star");
 
+    /**
+     * Finite, whitelisted set of line diagonals — mirrors the frontend's {@code ShapeDiag}. A line
+     * is the diagonal of its bounding box, so this bit plus the box reproduces any segment.
+     */
+    static final Set<String> ALLOWED_DIAGS = Set.of("tlbr", "bltr");
+
     private static final String DEFAULT_KIND = "rect";
     private static final String DEFAULT_STROKE = "#A5B4FC";
     private static final String NONE = "none";
     private static final double DEFAULT_OPACITY = 1;
     private static final double DEFAULT_ROTATION = 0;
+    private static final String DEFAULT_DIAG = "tlbr";
 
     private static final Pattern HEX_COLOR = Pattern.compile("^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?$");
 
@@ -52,7 +60,8 @@ public class ShapeStyleSanitizer {
     private static final int PART_FILL = 2;
     private static final int PART_OPACITY = 3;
     private static final int PART_ROTATION = 4;
-    private static final int PART_COUNT = 5;
+    private static final int PART_DIAG = 5;
+    private static final int PART_COUNT = 6;
 
     /**
      * Sanitises a raw {@code content} string intended for a {@link CardType#SHAPE} card.
@@ -60,8 +69,8 @@ public class ShapeStyleSanitizer {
      * @param rawContent the raw pipe-delimited content string — possibly blank, truncated,
      *                   carrying an out-of-whitelist {@code kind}, invalid colours, or
      *                   non-numeric {@code opacity}/{@code rotation}
-     * @return a {@code '{kind}|{stroke}|{fill}|{opacity}|{rotation}'} string with every field
-     *         validated (or replaced by its safe default) — never {@code null}, never throws
+     * @return a {@code '{kind}|{stroke}|{fill}|{opacity}|{rotation}|{diag}'} string with every
+     *         field validated (or replaced by its safe default) — never {@code null}, never throws
      */
     public String sanitize(final String rawContent) {
         String[] parts = splitFixed(rawContent == null ? "" : rawContent);
@@ -71,8 +80,10 @@ public class ShapeStyleSanitizer {
         String fill = NONE.equals(parts[PART_FILL]) || isHexColor(parts[PART_FILL]) ? parts[PART_FILL] : NONE;
         double opacity = clamp(parseDoubleOrDefault(parts[PART_OPACITY], DEFAULT_OPACITY), 0, 1);
         double rotation = parseDoubleOrDefault(parts[PART_ROTATION], DEFAULT_ROTATION);
+        String diag = ALLOWED_DIAGS.contains(parts[PART_DIAG]) ? parts[PART_DIAG] : DEFAULT_DIAG;
 
-        return kind + "|" + stroke + "|" + fill + "|" + formatNumber(opacity) + "|" + formatNumber(rotation);
+        return kind + "|" + stroke + "|" + fill + "|" + formatNumber(opacity) + "|" + formatNumber(rotation)
+                + "|" + diag;
     }
 
     /**
