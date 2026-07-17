@@ -276,4 +276,36 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
     @Modifying
     @Query("DELETE FROM Card c WHERE c.boardId = :boardId AND c.tenantId = :tenantId")
     long deleteAllByBoardIdAndTenantId(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
+
+    /**
+     * Deletes every card in {@code ids} that belongs to {@code boardId}, in a single bulk
+     * statement — the Klaxoon import undo (US08.13.1, {@code POST .../import/undo}). Scoped
+     * strictly by {@code boardId}: an id belonging to another board is silently skipped, never
+     * deleted — the anti-IDOR guard the undo acceptance criterion requires (the client-supplied
+     * id lists are trusted only under this scoping). Idempotent: an id already gone (already
+     * deleted, or never existed) simply does not contribute to the returned count, never an
+     * exception.
+     *
+     * @param ids     the candidate card ids to delete
+     * @param boardId the owning board UUID — the only board these ids may be deleted from
+     * @return the number of rows actually deleted (0..ids.size())
+     */
+    @Modifying
+    @Query("DELETE FROM Card c WHERE c.id IN :ids AND c.boardId = :boardId")
+    int deleteAllByIdInAndBoardId(@Param("ids") Collection<UUID> ids, @Param("boardId") UUID boardId);
+
+    /**
+     * Returns the lowest point occupied by any card of the board — {@code MAX(posY + height)} —
+     * one of the two terms combined by {@link FrameRepository#findMaxBottom} into the Klaxoon
+     * import's anti-collision {@code bottom} (US08.13.1, {@code offsetY = round(bottom + 120 -
+     * importTop)}). {@link Optional#empty()} when the board has no cards, letting the caller
+     * distinguish "no cards" from "cards sitting at posY=0" when deciding whether the board is
+     * empty (offset forced to 0 when both cards and frames are absent).
+     *
+     * @param boardId  the board UUID
+     * @param tenantId the tenant's {@code public.tenants.id} (tenant isolation)
+     * @return the maximum {@code posY + height} among the board's cards, or empty if none exist
+     */
+    @Query("SELECT MAX(c.posY + c.height) FROM Card c WHERE c.boardId = :boardId AND c.tenantId = :tenantId")
+    Optional<Double> findMaxBottom(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
 }

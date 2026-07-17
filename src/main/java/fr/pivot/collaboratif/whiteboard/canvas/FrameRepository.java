@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -105,4 +106,31 @@ public interface FrameRepository extends JpaRepository<Frame, UUID> {
      * @return the number of rows deleted (0 or 1)
      */
     long deleteByIdAndBoardId(UUID id, UUID boardId);
+
+    /**
+     * Deletes every frame in {@code ids} that belongs to {@code boardId}, in a single bulk
+     * statement — the Klaxoon import undo (US08.13.1, {@code POST .../import/undo}). Scoped
+     * strictly by {@code boardId}, mirroring {@link CardRepository#deleteAllByIdInAndBoardId}: an
+     * id belonging to another board is silently skipped, never deleted.
+     *
+     * @param ids     the candidate frame ids to delete
+     * @param boardId the owning board UUID — the only board these ids may be deleted from
+     * @return the number of rows actually deleted (0..ids.size())
+     */
+    @Modifying
+    @Query("DELETE FROM Frame f WHERE f.id IN :ids AND f.boardId = :boardId")
+    int deleteAllByIdInAndBoardId(@Param("ids") Collection<UUID> ids, @Param("boardId") UUID boardId);
+
+    /**
+     * Returns the lowest point occupied by any frame of the board — {@code MAX(posY + height)} —
+     * the other term combined with {@link CardRepository#findMaxBottom} into the Klaxoon import's
+     * anti-collision {@code bottom} (US08.13.1). {@link Optional#empty()} when the board has no
+     * frames.
+     *
+     * @param boardId  the board UUID
+     * @param tenantId the tenant's {@code public.tenants.id} (tenant isolation)
+     * @return the maximum {@code posY + height} among the board's frames, or empty if none exist
+     */
+    @Query("SELECT MAX(f.posY + f.height) FROM Frame f WHERE f.boardId = :boardId AND f.tenantId = :tenantId")
+    Optional<Double> findMaxBottom(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
 }
