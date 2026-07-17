@@ -153,7 +153,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_everyWhitelistedKind_isPreserved() {
         for (String kind : ShapeStyleSanitizer.ALLOWED_KINDS) {
             String result = sanitizer.sanitize(kind + "|#112233|none|1|0");
-            assertThat(result).isEqualTo(kind + "|#112233|none|1|0");
+            assertThat(result).isEqualTo(kind + "|#112233|none|1|0|tlbr");
         }
     }
 

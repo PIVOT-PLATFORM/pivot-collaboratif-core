@@ -336,7 +336,10 @@ class WhiteboardShapeCardIT {
 
         Thread.sleep(300);
         Card reloaded = cardRepository.findById(shape.getId()).orElseThrow();
-        assertThat(reloaded.getContent()).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
+        // The seeded content is written straight to the database and never passes through the
+        // sanitizer, so it keeps its five fields — that untouched value is exactly the point here:
+        // a locked card must come back byte-for-byte as it was stored.
+        assertThat(reloaded.getContent()).isEqualTo("rect|#A5B4FC|none|1|0");
     }
 
     // =========================================================================
