@@ -17,14 +17,20 @@ import fr.pivot.collaboratif.whiteboard.canvas.CardType;
 import fr.pivot.collaboratif.whiteboard.canvas.FieldType;
 import fr.pivot.collaboratif.whiteboard.canvas.Frame;
 import fr.pivot.collaboratif.whiteboard.canvas.FrameRepository;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.BroadcastCanvasMessage;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.ImportUndoneBroadcastPayload;
+import fr.pivot.collaboratif.whiteboard.canvas.dto.ImportedBroadcastPayload;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -41,6 +47,8 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -110,6 +118,15 @@ class WhiteboardImportControllerIT {
 
     @Autowired
     private ImportRateLimitService rateLimitService;
+
+    /**
+     * Spy over the real STOMP template so broadcast destination and payload content can be
+     * asserted directly (not just the REST side-effects). The spy delegates to the real
+     * {@code convertAndSend} — the {@code SimpleBroker} simply has no subscribers under MockMvc,
+     * so the send is a harmless no-op while its arguments are still captured.
+     */
+    @MockitoSpyBean
+    private SimpMessagingTemplate messagingTemplate;
 
     private MockMvc mockMvc;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -425,6 +442,136 @@ class WhiteboardImportControllerIT {
     }
 
     // -------------------------------------------------------------------------
+    // Import — length-bound validation (name ≤ 120, value ≤ 2000, option ≤ 200)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Given a top-level field declaration whose {@code name} exceeds 120 characters, when the
+     * import is validated, then the server responds 400 before any write.
+     */
+    @Test
+    void import_fieldNameOver120_returns400() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        String tooLongName = "n".repeat(121);
+        String body = """
+                {
+                  "cards": [],
+                  "connections": [],
+                  "frames": [],
+                  "fields": [{"name": "%s", "type": "TEXT", "options": null}]
+                }
+                """.formatted(tooLongName);
+
+        mockMvc.perform(post(path(board.getId(), "klaxoon"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Given a card field value whose {@code value} exceeds 2000 characters, when the import is
+     * validated, then the server responds 400 before any write.
+     */
+    @Test
+    void import_fieldValueOver2000_returns400() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        String tooLongValue = "v".repeat(2001);
+        String body = """
+                {
+                  "cards": [
+                    {"klxId": "k1", "type": "TEXT", "content": "Task", "posX": 0, "posY": 0,
+                     "width": 200, "height": 100, "zIndex": 1, "locked": false,
+                     "fieldValues": [{"field": "Priority", "value": "%s"}]}
+                  ],
+                  "connections": [], "frames": [], "fields": []
+                }
+                """.formatted(tooLongValue);
+
+        mockMvc.perform(post(path(board.getId(), "klaxoon"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Given a SELECT field declaration one of whose {@code options} exceeds 200 characters, when
+     * the import is validated, then the server responds 400 before any write.
+     */
+    @Test
+    void import_fieldOptionOver200_returns400() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        String tooLongOption = "o".repeat(201);
+        String body = """
+                {
+                  "cards": [],
+                  "connections": [],
+                  "frames": [],
+                  "fields": [{"name": "Bucket", "type": "SELECT", "options": ["%s"]}]
+                }
+                """.formatted(tooLongOption);
+
+        mockMvc.perform(post(path(board.getId(), "klaxoon"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    // -------------------------------------------------------------------------
+    // Import — STOMP broadcast content (board:imported)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Given a successful import (2 cards, 1 connector, 1 frame), when it completes, then a
+     * {@code board:imported} STOMP message is broadcast on the real topic
+     * {@code /topic/whiteboard/{boardId}} carrying the <strong>full created objects</strong>
+     * (the card/connection/frame DTOs), not bare ids.
+     */
+    @Test
+    void import_broadcastsBoardImportedWithFullObjectsOnRealTopic() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        String body = """
+                {
+                  "cards": [
+                    {"klxId": "k1", "type": "TEXT", "content": "A", "posX": 0, "posY": 0,
+                     "width": 200, "height": 100, "zIndex": 1, "locked": false},
+                    {"klxId": "k2", "type": "TEXT", "content": "B", "posX": 300, "posY": 0,
+                     "width": 200, "height": 100, "zIndex": 1, "locked": false}
+                  ],
+                  "connections": [
+                    {"fromKlxId": "k1", "toKlxId": "k2", "shape": "curved", "color": "#000000",
+                     "arrow": "none", "label": null, "width": 2, "dashed": false}
+                  ],
+                  "frames": [
+                    {"title": "Zone", "posX": 0, "posY": 0, "width": 500, "height": 400}
+                  ],
+                  "fields": []
+                }
+                """;
+
+        mockMvc.perform(post(path(board.getId(), "klaxoon"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(body))
+                .andExpect(status().isCreated());
+
+        BroadcastCanvasMessage msg = captureBroadcast("board:imported", board.getId());
+        assertThat(msg).as("board:imported must be broadcast").isNotNull();
+        assertThat(msg.data()).isInstanceOf(ImportedBroadcastPayload.class);
+        ImportedBroadcastPayload payload = (ImportedBroadcastPayload) msg.data();
+        assertThat(payload.cards()).hasSize(2);
+        assertThat(payload.connections()).hasSize(1);
+        assertThat(payload.frames()).hasSize(1);
+        // Full objects, not bare ids: DTO fields are populated.
+        assertThat(payload.cards().get(0).id()).isNotBlank();
+        assertThat(payload.cards().get(0).content()).isIn("A", "B");
+        assertThat(payload.connections().get(0).fromId()).isNotBlank();
+        assertThat(payload.frames().get(0).title()).isEqualTo("Zone");
+    }
+
+    // -------------------------------------------------------------------------
     // Import — rate limit
     // -------------------------------------------------------------------------
 
@@ -556,20 +703,42 @@ class WhiteboardImportControllerIT {
     }
 
     /**
-     * Given an undo request whose {@code cardIds} exceeds the 10 000-item cap, when validated,
-     * then the server responds 400.
+     * Given an undo whose {@code cardIds} exceeds the 10 000-item cap, when validated, then 400.
      */
     @Test
     void undo_exceedingCardIdsCap_returns400() throws Exception {
         Board board = createBoard(tenantA, ownerIdA);
-        StringBuilder ids = new StringBuilder();
-        for (int i = 0; i < 10_001; i++) {
-            if (i > 0) {
-                ids.append(',');
-            }
-            ids.append('"').append(UUID.randomUUID()).append('"');
-        }
-        String undoBody = "{\"cardIds\": [" + ids + "], \"connectionIds\": [], \"frameIds\": []}";
+        String undoBody = capBody("cardIds", 10_001, "connectionIds", "frameIds");
+
+        mockMvc.perform(post(path(board.getId(), "undo"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(undoBody))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Given an undo whose {@code connectionIds} exceeds the 10 000-item cap, when validated, then 400.
+     */
+    @Test
+    void undo_exceedingConnectionIdsCap_returns400() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        String undoBody = capBody("connectionIds", 10_001, "cardIds", "frameIds");
+
+        mockMvc.perform(post(path(board.getId(), "undo"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(undoBody))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Given an undo whose {@code frameIds} exceeds the 1 000-item cap, when validated, then 400.
+     */
+    @Test
+    void undo_exceedingFrameIdsCap_returns400() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        String undoBody = capBody("frameIds", 1_001, "cardIds", "connectionIds");
 
         mockMvc.perform(post(path(board.getId(), "undo"))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -594,6 +763,91 @@ class WhiteboardImportControllerIT {
                         .header("Authorization", "Bearer " + tokenA)
                         .content(undoBody))
                 .andExpect(status().isNotFound());
+    }
+
+    // -------------------------------------------------------------------------
+    // Undo — STOMP broadcast content (board:import-undone)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Given an undo whose id lists contain one real imported card plus one foreign id that is
+     * never deleted, when the undo completes, then the {@code board:import-undone} broadcast on
+     * {@code /topic/whiteboard/{boardId}} carries the <strong>requested</strong> ids (both, size
+     * 2) — not the effectively-deleted ones (only 1 card actually removed).
+     */
+    @Test
+    void undo_broadcastsRequestedIdsNotDeletedOnesOnRealTopic() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        Card imported = cardRepository.save(
+                new Card(board.getId(), tenantA, CardType.TEXT, "A", 0, 0, Instant.now()));
+        String foreignId = UUID.randomUUID().toString();
+
+        String undoBody = """
+                {"cardIds": ["%s", "%s"], "connectionIds": [], "frameIds": []}
+                """.formatted(imported.getId(), foreignId);
+
+        mockMvc.perform(post(path(board.getId(), "undo"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(undoBody))
+                .andExpect(status().isOk())
+                // Only the real card was actually deleted (the foreign id resolves nowhere).
+                .andExpect(jsonPath("$.cards").value(1));
+
+        BroadcastCanvasMessage msg = captureBroadcast("board:import-undone", board.getId());
+        assertThat(msg).as("board:import-undone must be broadcast").isNotNull();
+        assertThat(msg.data()).isInstanceOf(ImportUndoneBroadcastPayload.class);
+        ImportUndoneBroadcastPayload payload = (ImportUndoneBroadcastPayload) msg.data();
+        // Requested ids, not deleted ones: both the real and the foreign id are echoed back.
+        assertThat(payload.cardIds()).containsExactlyInAnyOrder(imported.getId().toString(), foreignId);
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Builds an undo request body where {@code overCapField} holds {@code count} random UUIDs and
+     * the other two named fields are empty — used to exercise each list's size cap in isolation.
+     */
+    private String capBody(
+            final String overCapField, final int count, final String emptyA, final String emptyB) {
+        StringBuilder ids = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            if (i > 0) {
+                ids.append(',');
+            }
+            ids.append('"').append(UUID.randomUUID()).append('"');
+        }
+        return "{\"" + overCapField + "\": [" + ids + "], "
+                + "\"" + emptyA + "\": [], \"" + emptyB + "\": []}";
+    }
+
+    /**
+     * Captures the STOMP message of the given wire {@code type} broadcast for {@code boardId} on
+     * the spied {@link SimpMessagingTemplate}, asserting it was sent to the real board topic
+     * {@code /topic/whiteboard/{boardId}}. Filters by board id so accumulated invocations from
+     * other tests sharing the reused context never match. Returns {@code null} if none was sent.
+     */
+    private BroadcastCanvasMessage captureBroadcast(final String type, final UUID boardId) {
+        ArgumentCaptor<String> destCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(messagingTemplate, atLeastOnce()).convertAndSend(destCaptor.capture(), payloadCaptor.capture());
+
+        String expectedDestination = "/topic/whiteboard/" + boardId;
+        List<String> destinations = destCaptor.getAllValues();
+        List<Object> payloads = payloadCaptor.getAllValues();
+        for (int i = 0; i < payloads.size(); i++) {
+            if (payloads.get(i) instanceof BroadcastCanvasMessage msg
+                    && type.equals(msg.type())
+                    && boardId.toString().equals(msg.boardId())) {
+                assertThat(destinations.get(i))
+                        .as("broadcast must target the real board topic")
+                        .isEqualTo(expectedDestination);
+                return msg;
+            }
+        }
+        return null;
     }
 
     private List<String> toStringList(final JsonNode array) {
