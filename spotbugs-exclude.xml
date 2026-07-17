@@ -102,6 +102,13 @@
                  List for JSON transport (same rationale as the canvas.dto package above). -->
             <Package name="fr.pivot.collaboratif.whiteboard.vote"/>
             <Package name="fr.pivot.collaboratif.whiteboard.vote.dto"/>
+            <!-- US08.13.1 — Klaxoon import + undo: WhiteboardImportService/WhiteboardImportController/
+                 ImportRateLimitService/ImportBodySizeLimitFilter store constructor-injected singleton
+                 beans (repositories, StringRedisTemplate, SimpMessagingTemplate via WhiteboardBroadcastService,
+                 ObjectMapper); DTO records (request/response/broadcast payloads) expose mutable List
+                 for JSON transport (same rationale as the canvas.dto package above). -->
+            <Package name="fr.pivot.collaboratif.whiteboard.importer"/>
+            <Package name="fr.pivot.collaboratif.whiteboard.importer.dto"/>
             <Package name="fr.pivot.collaboratif.context"/>
             <Package name="fr.pivot.collaboratif.config"/>
             <Package name="fr.pivot.collaboratif.exception"/>

@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -84,4 +85,21 @@ public interface CardConnectionRepository extends JpaRepository<CardConnection, 
     @Modifying
     @Query("DELETE FROM CardConnection c WHERE c.boardId = :boardId AND c.tenantId = :tenantId")
     long deleteAllByBoardIdAndTenantId(@Param("boardId") UUID boardId, @Param("tenantId") Long tenantId);
+
+    /**
+     * Deletes every connector in {@code ids} that belongs to {@code boardId}, in a single bulk
+     * statement — the Klaxoon import undo (US08.13.1, {@code POST .../import/undo}). Scoped
+     * strictly by {@code boardId}, mirroring {@link CardRepository#deleteAllByIdInAndBoardId}.
+     * Naturally idempotent against the {@code ON DELETE CASCADE} triggered by an endpoint card's
+     * own deletion: a connector id already gone that way simply does not contribute to the
+     * returned count — the caller (undo) never sees an error for it (acceptance criterion: "le
+     * deleteMany explicite sur connectionIds peut compter 0 sans erreur").
+     *
+     * @param ids     the candidate connector ids to delete
+     * @param boardId the owning board UUID — the only board these ids may be deleted from
+     * @return the number of rows actually deleted (0..ids.size())
+     */
+    @Modifying
+    @Query("DELETE FROM CardConnection c WHERE c.id IN :ids AND c.boardId = :boardId")
+    int deleteAllByIdInAndBoardId(@Param("ids") Collection<UUID> ids, @Param("boardId") UUID boardId);
 }
