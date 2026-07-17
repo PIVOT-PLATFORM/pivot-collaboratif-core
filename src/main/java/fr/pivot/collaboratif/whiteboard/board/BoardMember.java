@@ -9,6 +9,7 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * JPA entity representing a user's membership and role on a whiteboard board.
@@ -16,6 +17,12 @@ import java.time.Instant;
  * <p>The primary key is a composite of {@code boardId} and {@code userId},
  * ensuring each user appears at most once per board. The {@code joinedAt}
  * timestamp is set automatically on first persist.
+ *
+ * <p>This entity is the concrete model behind the {@code BoardShare} concept of US08.2.5 (no
+ * separate table): in addition to the composite key it carries a board-independent surrogate
+ * {@code shareId}, the stable target of the {@code /shares/{shareId}} governance routes. The
+ * surrogate lets those routes scope every read/write by {@code (shareId, boardId)}, closing the
+ * IDOR flaw §6.1 (a manager of board A altering a share row of board B by knowing its line id).
  */
 @Entity
 @Table(name = "board_member", schema = "collaboratif")
@@ -24,6 +31,16 @@ public class BoardMember {
     /** Composite primary key: (boardId, userId). */
     @EmbeddedId
     private BoardMemberId id;
+
+    /**
+     * Board-independent surrogate identifier of this share row (US08.2.5).
+     *
+     * <p>Exposed as {@code shareId} through the {@code /shares/{shareId}} API and never reused
+     * across boards, so a share row is always addressable independently of the {@code userId}
+     * while remaining scoped to its board.
+     */
+    @Column(name = "share_id", nullable = false, unique = true, updatable = false)
+    private UUID shareId;
 
     /** Role of the user on this board. */
     @Enumerated(EnumType.STRING)
@@ -52,13 +69,16 @@ public class BoardMember {
     }
 
     /**
-     * Sets {@code joinedAt} to the current instant before the first insert
-     * if it has not already been set.
+     * Sets {@code joinedAt} to the current instant, and generates the surrogate
+     * {@code shareId} when absent, before the first insert.
      */
     @PrePersist
     public void prePersist() {
         if (this.joinedAt == null) {
             this.joinedAt = Instant.now();
+        }
+        if (this.shareId == null) {
+            this.shareId = UUID.randomUUID();
         }
     }
 
@@ -69,6 +89,15 @@ public class BoardMember {
      */
     public BoardMemberId getId() {
         return id;
+    }
+
+    /**
+     * Returns the board-independent surrogate identifier of this share row (US08.2.5).
+     *
+     * @return the {@code shareId}, or {@code null} before the first persist
+     */
+    public UUID getShareId() {
+        return shareId;
     }
 
     /**

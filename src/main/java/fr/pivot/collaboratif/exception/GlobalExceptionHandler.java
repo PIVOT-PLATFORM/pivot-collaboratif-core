@@ -116,6 +116,39 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Returns HTTP 404 when an invitation targets an e-mail that resolves to no active user of the
+     * caller's tenant (US08.2.5) — deliberately indistinguishable from an unknown board/share so
+     * an e-mail from another tenant cannot be enumerated.
+     *
+     * @param ex the thrown exception
+     * @return a 404 problem detail
+     */
+    @ExceptionHandler(InviteeNotFoundException.class)
+    public ProblemDetail handleInviteeNotFound(final InviteeNotFoundException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Invitee not found");
+        problem.setDetail(ex.getMessage());
+        problem.setProperties(Map.of("code", "INVITEE_NOT_FOUND"));
+        return problem;
+    }
+
+    /**
+     * Returns HTTP 400 with a machine-readable {@code code} property when an invitation is
+     * disallowed for a business reason (US08.2.5): {@code SELF_INVITE} or {@code ALREADY_OWNER}.
+     *
+     * @param ex the thrown exception
+     * @return a 400 problem detail carrying the code
+     */
+    @ExceptionHandler(InvalidInvitationException.class)
+    public ProblemDetail handleInvalidInvitation(final InvalidInvitationException ex) {
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid invitation");
+        problem.setDetail(ex.getMessage());
+        problem.setProperties(Map.of("code", ex.getCode()));
+        return problem;
+    }
+
+    /**
      * Returns HTTP 409 Conflict when the user is already a member of the board.
      *
      * @param ex the thrown exception
