@@ -137,7 +137,7 @@ class WhiteboardShapeCardIT {
         assertThat(msg.type()).isEqualTo("card:created");
         Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("SHAPE");
-        assertThat(cardData.get("content")).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(cardData.get("content")).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
         assertThat(((Number) cardData.get("width")).doubleValue()).isEqualTo(192.0);
         assertThat(((Number) cardData.get("height")).doubleValue()).isEqualTo(128.0);
         assertThat(cardData.get("color")).isEqualTo("#FFEB3B");
@@ -149,7 +149,7 @@ class WhiteboardShapeCardIT {
                 .findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(board.getId(), tenantId);
         assertThat(cards).hasSize(1);
         assertThat(cards.get(0).getType()).isEqualTo(CardType.SHAPE);
-        assertThat(cards.get(0).getContent()).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(cards.get(0).getContent()).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     // =========================================================================
@@ -180,7 +180,7 @@ class WhiteboardShapeCardIT {
         BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
         Map<String, Object> cardData = map(msg);
         assertThat(cardData.get("type")).isEqualTo("SHAPE");
-        assertThat((String) cardData.get("content")).isEqualTo("circle|#445566|#112233|0.8|0");
+        assertThat((String) cardData.get("content")).isEqualTo("circle|#445566|#112233|0.8|0|tlbr");
         assertThat(((Number) cardData.get("width")).doubleValue()).isEqualTo(300.0);
         assertThat(((Number) cardData.get("height")).doubleValue()).isEqualTo(150.0);
         assertThat(cardData.get("color")).isEqualTo("#00FF00");
@@ -212,12 +212,12 @@ class WhiteboardShapeCardIT {
         Map<String, Object> cardData = map(msg);
         String content = (String) cardData.get("content");
         assertThat(content).doesNotContain("script").doesNotContain("javascript:");
-        assertThat(content).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(content).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
 
         Thread.sleep(200);
         List<Card> cards = cardRepository
                 .findAllByBoardIdAndTenantIdOrderByLayerAscCreatedAtAsc(board.getId(), tenantId);
-        assertThat(cards.get(0).getContent()).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(cards.get(0).getContent()).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     // =========================================================================
@@ -336,7 +336,7 @@ class WhiteboardShapeCardIT {
 
         Thread.sleep(300);
         Card reloaded = cardRepository.findById(shape.getId()).orElseThrow();
-        assertThat(reloaded.getContent()).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(reloaded.getContent()).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     // =========================================================================
@@ -365,7 +365,7 @@ class WhiteboardShapeCardIT {
         assertThat(msg.type()).isEqualTo("card:updated");
         assertThat(map(msg).get("id")).isEqualTo(shape.getId().toString());
         String broadcastContent = (String) map(msg).get("content");
-        assertThat(broadcastContent).isEqualTo("diamond|#112233|none|1|0");
+        assertThat(broadcastContent).isEqualTo("diamond|#112233|none|1|0|tlbr");
 
         Card reloaded = cardRepository.findById(shape.getId()).orElseThrow();
         assertThat(reloaded.getContent()).isEqualTo(broadcastContent);
