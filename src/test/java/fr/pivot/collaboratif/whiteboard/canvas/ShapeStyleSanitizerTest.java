@@ -22,7 +22,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_wellFormedPayload_preservesAllFields() {
         String result = sanitizer.sanitize("circle|#112233|#445566|0.5|45");
 
-        assertThat(result).isEqualTo("circle|#112233|#445566|0.5|45");
+        assertThat(result).isEqualTo("circle|#112233|#445566|0.5|45|tlbr");
     }
 
     /**
@@ -33,7 +33,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_blankContent_fallsBackToDefaults() {
         String result = sanitizer.sanitize("");
 
-        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     /**
@@ -44,7 +44,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_nullContent_fallsBackToDefaults() {
         String result = sanitizer.sanitize(null);
 
-        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     /**
@@ -55,7 +55,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_truncatedContent_missingFieldsFallBackToDefaults() {
         String result = sanitizer.sanitize("diamond");
 
-        assertThat(result).isEqualTo("diamond|#A5B4FC|none|1|0");
+        assertThat(result).isEqualTo("diamond|#A5B4FC|none|1|0|tlbr");
     }
 
     /**
@@ -78,7 +78,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_invalidStrokeColor_fallsBackToDefault() {
         String result = sanitizer.sanitize("rect|javascript:alert(1)|none|1|0");
 
-        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     /**
@@ -89,7 +89,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_invalidFillColor_fallsBackToNone() {
         String result = sanitizer.sanitize("rect|#A5B4FC|url(javascript:alert(1))|1|0");
 
-        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     /**
@@ -100,7 +100,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_noneFill_isPreserved() {
         String result = sanitizer.sanitize("circle|#112233|none|1|0");
 
-        assertThat(result).isEqualTo("circle|#112233|none|1|0");
+        assertThat(result).isEqualTo("circle|#112233|none|1|0|tlbr");
     }
 
     /**
@@ -111,7 +111,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_threeDigitHexColor_isAccepted() {
         String result = sanitizer.sanitize("rect|#abc|#def|1|0");
 
-        assertThat(result).isEqualTo("rect|#abc|#def|1|0");
+        assertThat(result).isEqualTo("rect|#abc|#def|1|0|tlbr");
     }
 
     /**
@@ -122,7 +122,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_nonNumericOpacity_fallsBackToDefault() {
         String result = sanitizer.sanitize("rect|#A5B4FC|none|not-a-number|0");
 
-        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     /**
@@ -130,8 +130,8 @@ class ShapeStyleSanitizerTest {
      */
     @Test
     void sanitize_outOfRangeOpacity_isClamped() {
-        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|5|0")).isEqualTo("rect|#A5B4FC|none|1|0");
-        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|-3|0")).isEqualTo("rect|#A5B4FC|none|0|0");
+        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|5|0")).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
+        assertThat(sanitizer.sanitize("rect|#A5B4FC|none|-3|0")).isEqualTo("rect|#A5B4FC|none|0|0|tlbr");
     }
 
     /**
@@ -142,7 +142,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_nonNumericRotation_fallsBackToDefault() {
         String result = sanitizer.sanitize("rect|#A5B4FC|none|1|not-a-number");
 
-        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0");
+        assertThat(result).isEqualTo("rect|#A5B4FC|none|1|0|tlbr");
     }
 
     /**
@@ -153,7 +153,7 @@ class ShapeStyleSanitizerTest {
     void sanitize_everyWhitelistedKind_isPreserved() {
         for (String kind : ShapeStyleSanitizer.ALLOWED_KINDS) {
             String result = sanitizer.sanitize(kind + "|#112233|none|1|0");
-            assertThat(result).isEqualTo(kind + "|#112233|none|1|0");
+            assertThat(result).isEqualTo(kind + "|#112233|none|1|0|tlbr");
         }
     }
 
@@ -166,5 +166,36 @@ class ShapeStyleSanitizerTest {
     void sanitize_fractionalAndWholeNumbers_areFormattedLikeJavaScript() {
         assertThat(sanitizer.sanitize("rect|#A5B4FC|none|1|0")).contains("|1|0");
         assertThat(sanitizer.sanitize("rect|#A5B4FC|none|0.5|90")).contains("|0.5|90");
+    }
+
+    /**
+     * Given a line carrying its diagonal, when sanitize() is called, then the diagonal survives.
+     * This is the whole point of the field: a line is the diagonal of its box, so dropping it would
+     * silently flip every backslash-oriented line to a slash-oriented one on reload.
+     */
+    @Test
+    void sanitize_lineDiagonal_isPreserved() {
+        assertThat(sanitizer.sanitize("line|#112233|none|1|0|bltr")).isEqualTo("line|#112233|none|1|0|bltr");
+        assertThat(sanitizer.sanitize("line|#112233|none|1|0|tlbr")).isEqualTo("line|#112233|none|1|0|tlbr");
+    }
+
+    /**
+     * Given an out-of-whitelist diagonal, when sanitize() is called, then it falls back to the
+     * default — same closed-set treatment as {@code kind}, so no crafted value reaches the renderer.
+     */
+    @Test
+    void sanitize_unknownDiagonal_fallsBackToDefault() {
+        assertThat(sanitizer.sanitize("line|#112233|none|1|0|sideways")).isEqualTo("line|#112233|none|1|0|tlbr");
+        assertThat(sanitizer.sanitize("line|#112233|none|1|0|<script>")).isEqualTo("line|#112233|none|1|0|tlbr");
+    }
+
+    /**
+     * Given a shape saved before the diagonal existed (five fields), when sanitize() is called,
+     * then it gains the default diagonal rather than being rejected — the field is additive, and
+     * every stored SHAPE predates it.
+     */
+    @Test
+    void sanitize_contentWithoutDiagonal_getsTheDefault() {
+        assertThat(sanitizer.sanitize("line|#112233|none|1|0")).isEqualTo("line|#112233|none|1|0|tlbr");
     }
 }
