@@ -155,6 +155,93 @@ class CardConnectionIT {
     }
 
     // =========================================================================
+    // Test 1b — CONNECTION_CREATE applies the style chosen before the connector was drawn
+    // =========================================================================
+
+    /**
+     * The UI lets the user pick arrow/dashed <em>before</em> drawing. The style must land in the
+     * single {@code connection:created} broadcast: the board is server-authoritative with no
+     * optimistic rendering, so styling through a follow-up {@code connection:update} would show
+     * every participant a default-styled connector first, then visibly correct it.
+     */
+    @Test
+    void connection_create_applies_style_supplied_at_creation_in_a_single_broadcast() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card cardA = seedCard(board.getId(), tenantId);
+        Card cardB = seedCard(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_CREATE",
+                        "data", Map.of(
+                                "fromId", cardA.getId().toString(),
+                                "toId", cardB.getId().toString(),
+                                "arrow", "end",
+                                "dashed", true,
+                                "shape", "straight")));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        assertThat(msg.type()).isEqualTo("connection:created");
+        Map<String, Object> connData = map(msg);
+        assertThat(connData.get("arrow")).isEqualTo("end");
+        assertThat(connData.get("dashed")).isEqualTo(true);
+        assertThat(connData.get("shape")).isEqualTo("straight");
+
+        Thread.sleep(200);
+        List<CardConnection> connections = cardConnectionRepository.findAllByBoardIdAndTenantId(board.getId(), tenantId);
+        assertThat(connections).hasSize(1);
+        assertThat(connections.get(0).getArrow()).isEqualTo("end");
+        assertThat(connections.get(0).isDashed()).isTrue();
+        assertThat(connections.get(0).getShape()).isEqualTo("straight");
+    }
+
+    /**
+     * A value outside the whitelist is rejected for that field alone (US08.7.2 AC5) — the same
+     * semantics as the update path, since both share {@code applyConnectionPatch}. The connector is
+     * still created, with the entity default for the rejected field only.
+     */
+    @Test
+    void connection_create_rejects_an_out_of_whitelist_value_for_that_field_alone() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card cardA = seedCard(board.getId(), tenantId);
+        Card cardB = seedCard(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_CREATE",
+                        "data", Map.of(
+                                "fromId", cardA.getId().toString(),
+                                "toId", cardB.getId().toString(),
+                                "arrow", "'; DROP TABLE card_connection; --",
+                                "dashed", true)));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        Map<String, Object> connData = map(msg);
+        // Rejected field falls back to the entity default; the valid field of the same message applies.
+        assertThat(connData.get("arrow")).isEqualTo("none");
+        assertThat(connData.get("dashed")).isEqualTo(true);
+
+        Thread.sleep(200);
+        List<CardConnection> connections = cardConnectionRepository.findAllByBoardIdAndTenantId(board.getId(), tenantId);
+        assertThat(connections).hasSize(1);
+        assertThat(connections.get(0).getArrow()).isEqualTo("none");
+    }
+
+    // =========================================================================
     // Test 2 — self-link creates nothing and broadcasts nothing
     // =========================================================================
 

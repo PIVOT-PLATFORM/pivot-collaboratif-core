@@ -105,17 +105,17 @@ public class CanvasActionService {
 
     /**
      * Finite, whitelisted set of connector line shapes accepted by
-     * {@link #handleConnectionUpdate} — English wire values matching {@link CardConnection}'s
-     * own creation-time default ({@code curved}, US08.7.1). A {@code shape} outside this set is
-     * rejected for that field alone (US08.7.2, AC5).
+     * {@link #handleConnectionUpdate} and {@link #handleConnectionCreate} — English wire values
+     * matching {@link CardConnection}'s own creation-time default ({@code curved}, US08.7.1). A
+     * {@code shape} outside this set is rejected for that field alone (US08.7.2, AC5).
      */
     static final Set<String> ALLOWED_CONNECTION_SHAPES = Set.of("straight", "curved", "orthogonal");
 
     /**
      * Finite, whitelisted set of connector arrowhead styles accepted by
-     * {@link #handleConnectionUpdate} — English wire values matching {@link CardConnection}'s
-     * own creation-time default ({@code none}, US08.7.1). An {@code arrow} outside this set is
-     * rejected for that field alone (US08.7.2, AC5).
+     * {@link #handleConnectionUpdate} and {@link #handleConnectionCreate} — English wire values
+     * matching {@link CardConnection}'s own creation-time default ({@code none}, US08.7.1). An
+     * {@code arrow} outside this set is rejected for that field alone (US08.7.2, AC5).
      */
     static final Set<String> ALLOWED_CONNECTION_ARROWS = Set.of("none", "start", "end", "both");
 
@@ -1056,6 +1056,15 @@ public class CanvasActionService {
             return;
         }
         CardConnection connection = new CardConnection(boardId, principal.tenantId(), fromId, toId, Instant.now());
+        // Style chosen before the connector was drawn (arrow, dashed…) applies at creation time, so
+        // it reaches every participant in the single `connection:created` broadcast below. The board
+        // is server-authoritative with no optimistic rendering: styling through a follow-up
+        // `connection:update` instead would show everyone a default-styled connector first, then
+        // visibly correct it. Same patch helper as the update path — the field whitelists and the
+        // reject-that-field-alone semantics (US08.7.2 AC5) are shared, never duplicated. Fields
+        // absent from `data` keep the entity's own defaults, so a client that sends no style at all
+        // behaves exactly as before.
+        applyConnectionPatch(connection, data);
         cardConnectionRepository.save(connection);
 
         // Flat connector fields at the top level of `data`, matching the frontend's
