@@ -2,6 +2,7 @@ package fr.pivot.collaboratif.whiteboard.share;
 
 import fr.pivot.collaboratif.exception.BoardAccessDeniedException;
 import fr.pivot.collaboratif.exception.BoardNotFoundException;
+import fr.pivot.collaboratif.exception.InvalidInvitationException;
 import fr.pivot.collaboratif.exception.InviteeNotFoundException;
 import fr.pivot.collaboratif.whiteboard.board.Board;
 import fr.pivot.collaboratif.whiteboard.board.BoardMember;
@@ -112,11 +113,12 @@ public class BoardInviteService {
         Long inviteeId = invitee.getId();
         // (3) A manager cannot invite themselves.
         if (inviteeId.equals(callerId)) {
-            throw new IllegalArgumentException("Vous ne pouvez pas vous inviter vous-même");
+            throw new InvalidInvitationException("SELF_INVITE", "Vous ne pouvez pas vous inviter vous-même");
         }
         // (4) The creator already owns the board and has no share row.
         if (inviteeId.equals(board.getOwnerId())) {
-            throw new IllegalArgumentException("Cet utilisateur est déjà propriétaire du board");
+            throw new InvalidInvitationException(
+                    "ALREADY_OWNER", "Cet utilisateur est déjà propriétaire du board");
         }
 
         BoardMember existing = memberRepository
