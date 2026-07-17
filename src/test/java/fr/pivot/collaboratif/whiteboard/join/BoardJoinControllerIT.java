@@ -310,16 +310,16 @@ class BoardJoinControllerIT {
     }
 
     // -------------------------------------------------------------------------
-    // Already member → 409
+    // Already member → upsert update:{} (US08.2.5) — never demote/promote, 200
     // -------------------------------------------------------------------------
 
     /**
-     * Given a user who already joined the board,
-     * when POST /whiteboard/join again,
-     * then returns 409 Conflict.
+     * Given a user who already joined the board as EDITOR,
+     * when POST /whiteboard/join again with the same link,
+     * then returns 200 and keeps the EDITOR role (upsert update:{}, US08.2.5).
      */
     @Test
-    void join_alreadyMember_returns409() throws Exception {
+    void join_alreadyMember_returns200KeepsRole() throws Exception {
         String joiner2Token = tokenFor(newUserInTenant(tenantId));
         String boardId = createBoard(ownerToken, "Dup Board");
         String token = generateShareToken(ownerToken, boardId, "EDITOR", 2, null);
@@ -328,29 +328,59 @@ class BoardJoinControllerIT {
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
                                 .header("Authorization", "Bearer " + joiner2Token))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("EDITOR"));
 
-        // Second join with same user → 409
+        // Second join with same user → 200, role unchanged (no demotion/promotion)
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
                                 .header("Authorization", "Bearer " + joiner2Token))
-                .andExpect(status().isConflict());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("EDITOR"));
     }
 
     /**
-     * Given the board owner tries to join their own board via a token,
-     * when POST /whiteboard/join?token=...,
-     * then returns 409 Conflict (owner is already a member).
+     * Given an existing EDITOR member,
+     * when they join again via a public link configured as VIEWER,
+     * then their role stays EDITOR (joining via a link never demotes a present member, US08.2.5).
      */
     @Test
-    void join_ownerJoinsOwnBoard_returns409() throws Exception {
+    void join_existingEditorViaViewerLink_staysEditor() throws Exception {
+        String memberToken = tokenFor(newUserInTenant(tenantId));
+        String boardId = createBoard(ownerToken, "No Demote Board");
+        String editorLink = generateShareToken(ownerToken, boardId, "EDITOR", 5, null);
+        String viewerLink = generateShareToken(ownerToken, boardId, "VIEWER", 5, null);
+
+        // Join first as EDITOR
+        mockMvc.perform(
+                        post(JOIN_PATH + "?token=" + editorLink)
+                                .header("Authorization", "Bearer " + memberToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("EDITOR"));
+
+        // Re-join via a VIEWER link → still EDITOR, never demoted
+        mockMvc.perform(
+                        post(JOIN_PATH + "?token=" + viewerLink)
+                                .header("Authorization", "Bearer " + memberToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("EDITOR"));
+    }
+
+    /**
+     * Given the board owner joins their own board via a token,
+     * when POST /whiteboard/join?token=...,
+     * then returns 200 with role OWNER (creator is never demoted, has no share row, US08.2.5).
+     */
+    @Test
+    void join_ownerJoinsOwnBoard_returns200Owner() throws Exception {
         String boardId = createBoard(ownerToken, "Owner Board");
         String token = generateShareToken(ownerToken, boardId, "EDITOR", 1, null);
 
         mockMvc.perform(
                         post(JOIN_PATH + "?token=" + token)
                                 .header("Authorization", "Bearer " + ownerToken))
-                .andExpect(status().isConflict());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("OWNER"));
     }
 
     // -------------------------------------------------------------------------

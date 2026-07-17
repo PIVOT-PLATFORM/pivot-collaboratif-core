@@ -154,6 +154,35 @@ public final class PlatformAuthTestSupport {
     }
 
     /**
+     * Inserts a user row with an explicit e-mail address (US08.2.5 invitation-by-email tests).
+     *
+     * @param jdbcUrl  the JDBC URL
+     * @param username the database username
+     * @param password the database password
+     * @param tenantId the owning tenant's id
+     * @param email    the user's e-mail address
+     * @param active   the {@code is_active} value
+     * @return the generated {@code public.users.id}
+     * @throws SQLException if the insert fails
+     */
+    public static long seedUserWithEmail(
+            final String jdbcUrl, final String username, final String password,
+            final long tenantId, final String email, final boolean active) throws SQLException {
+        final String sql = "INSERT INTO public.users (tenant_id, email, role, is_active) "
+                + "VALUES (?, ?, 'ROLE_USER', ?) RETURNING id";
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
+                PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, email);
+            ps.setBoolean(3, active);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    /**
      * Issues a bearer token row for {@code userId} and returns the raw token to send in an
      * {@code Authorization: Bearer <token>} header.
      *
