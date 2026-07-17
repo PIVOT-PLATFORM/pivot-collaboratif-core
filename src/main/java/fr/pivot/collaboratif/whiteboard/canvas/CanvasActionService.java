@@ -120,6 +120,22 @@ public class CanvasActionService {
     static final Set<String> ALLOWED_CONNECTION_ARROWS = Set.of("none", "start", "end", "both");
 
     /**
+     * Finite, whitelisted set of connector line styles accepted by
+     * {@link #handleConnectionUpdate} and {@link #handleConnectionCreate} — mirrors the frontend's
+     * {@code ConnLineStyle} (US08.7.2, V6). Supersedes the boolean {@code dashed}, which has no
+     * room for a third style. A value outside this set is rejected for that field alone.
+     */
+    static final Set<String> ALLOWED_LINE_STYLES = Set.of("solid", "dashed", "dotted");
+
+    /**
+     * Finite, whitelisted set of connector end shapes accepted by {@link #handleConnectionUpdate}
+     * and {@link #handleConnectionCreate} — mirrors the frontend's {@code ConnCap} (US08.7.2, V6).
+     * Applies to both {@code startCap} and {@code endCap}, which together supersede {@code arrow}
+     * (one value for both ends at once). A value outside this set is rejected for that field alone.
+     */
+    static final Set<String> ALLOWED_CONNECTION_CAPS = Set.of("none", "arrow", "triangle", "circle", "diamond");
+
+    /**
      * Events whose handler performs no synchronous JPA work — pure broadcast, Redis store, or the
      * off-thread async DRAW writer — and therefore must not open a database transaction (W4). Every
      * other event runs in a transaction (JOIN read-only, all mutations read-write); see
@@ -1220,7 +1236,42 @@ public class CanvasActionService {
                 mutated = true;
             }
         }
+        mutated |= applyWhitelisted(data, "lineStyle", ALLOWED_LINE_STYLES, connection::setLineStyle, connection);
+        mutated |= applyWhitelisted(data, "startCap", ALLOWED_CONNECTION_CAPS, connection::setStartCap, connection);
+        mutated |= applyWhitelisted(data, "endCap", ALLOWED_CONNECTION_CAPS, connection::setEndCap, connection);
         return mutated;
+    }
+
+    /**
+     * Applies one closed-set string field of a connector patch, rejecting anything outside its
+     * whitelist for that field alone (US08.7.2, AC5) — the same semantics the {@code shape} and
+     * {@code arrow} branches above implement by hand, factored out rather than copied a third,
+     * fourth and fifth time.
+     *
+     * @param data      the raw patch
+     * @param field     the field name on the wire
+     * @param allowed   the finite set of accepted values
+     * @param setter    applies an accepted value to the connector
+     * @param connection the connector being patched, for logging only
+     * @return {@code true} if the field was present and accepted
+     */
+    private boolean applyWhitelisted(
+            final Map<String, Object> data,
+            final String field,
+            final Set<String> allowed,
+            final java.util.function.Consumer<String> setter,
+            final CardConnection connection) {
+        if (!data.containsKey(field)) {
+            return false;
+        }
+        Object value = data.get(field);
+        if (value instanceof String s && allowed.contains(s)) {
+            setter.accept(s);
+            return true;
+        }
+        LOG.debug("Connection patch: {} value rejected — connectionId={} value={}",
+                field, connection.getId(), value);
+        return false;
     }
 
     /**
@@ -2041,7 +2092,8 @@ public class CanvasActionService {
         return CardConnectionDto.of(
                 connection.getId(), connection.getFromId(), connection.getToId(),
                 connection.getLabel(), connection.getColor(), connection.getShape(),
-                connection.getArrow(), connection.isDashed(), connection.getWidth());
+                connection.getArrow(), connection.isDashed(), connection.getWidth(),
+                connection.getLineStyle(), connection.getStartCap(), connection.getEndCap());
     }
 
     /**

@@ -19,6 +19,10 @@ import java.util.UUID;
  * @param arrow  the connector arrowhead style (fixed default {@code none} at creation)
  * @param dashed whether the connector line is dashed (fixed default {@code false} at creation)
  * @param width  the connector line stroke width (fixed default 2 at creation)
+ * @param lineStyle the line style — {@code solid}/{@code dashed}/{@code dotted} (US08.7.2, V6);
+ *                  supersedes {@code dashed}, which is kept for connectors stored before it
+ * @param startCap  the shape at the connector's start (US08.7.2, V6)
+ * @param endCap    the shape at the connector's end (US08.7.2, V6)
  */
 public record CardConnectionDto(
         String id,
@@ -29,7 +33,10 @@ public record CardConnectionDto(
         String shape,
         String arrow,
         boolean dashed,
-        int width) {
+        int width,
+        String lineStyle,
+        String startCap,
+        String endCap) {
 
     /**
      * Builds a {@link CardConnectionDto} from a persisted connector's fields.
@@ -43,6 +50,9 @@ public record CardConnectionDto(
      * @param arrow  the arrowhead style
      * @param dashed whether the line is dashed
      * @param width  the line stroke width
+     * @param lineStyle the line style
+     * @param startCap  the shape at the start
+     * @param endCap    the shape at the end
      * @return a new {@link CardConnectionDto}
      */
     public static CardConnectionDto of(
@@ -54,8 +64,12 @@ public record CardConnectionDto(
             final String shape,
             final String arrow,
             final boolean dashed,
-            final int width) {
+            final int width,
+            final String lineStyle,
+            final String startCap,
+            final String endCap) {
         return new CardConnectionDto(
-                id.toString(), fromId.toString(), toId.toString(), label, color, shape, arrow, dashed, width);
+                id.toString(), fromId.toString(), toId.toString(), label, color, shape, arrow, dashed, width,
+                lineStyle, startCap, endCap);
     }
 }

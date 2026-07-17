@@ -38,7 +38,10 @@
       "shape" : "straight",
       "arrow" : "both",
       "dashed" : true,
-      "width" : 4
+      "width" : 4,
+      "lineStyle" : "dotted",
+      "startCap" : "circle",
+      "endCap" : "triangle"
     } ],
     "frames" : [ ],
     "fields" : [ ]
