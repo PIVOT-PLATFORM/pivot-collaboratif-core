@@ -230,6 +230,50 @@ class WhiteboardImportControllerIT {
         assertThat(imported.getPosX()).isEqualTo(5.0);
     }
 
+    /**
+     * Given two imported cards sharing the same Klaxoon {@code groupKey}, when they are created,
+     * then both receive the same freshly server-generated {@code groupId}, distinct from any
+     * group already present on the board (never merged with an existing group).
+     */
+    @Test
+    void import_groupsCardsBySharedGroupKeyIntoFreshGroupId() throws Exception {
+        Board board = createBoard(tenantA, ownerIdA);
+        UUID existingGroupId = UUID.randomUUID();
+        Card preExistingGrouped = new Card(
+                board.getId(), tenantA, CardType.TEXT, "Pre-existing", 500, 500, Instant.now());
+        preExistingGrouped.setGroupId(existingGroupId);
+        cardRepository.save(preExistingGrouped);
+
+        String body = """
+                {
+                  "cards": [
+                    {"klxId": "k1", "type": "TEXT", "content": "A", "posX": 0, "posY": 0,
+                     "width": 200, "height": 100, "zIndex": 1, "locked": false, "groupKey": "g1"},
+                    {"klxId": "k2", "type": "TEXT", "content": "B", "posX": 300, "posY": 0,
+                     "width": 200, "height": 100, "zIndex": 1, "locked": false, "groupKey": "g1"}
+                  ],
+                  "connections": [], "frames": [], "fields": []
+                }
+                """;
+
+        MvcResult result = mockMvc.perform(post(path(board.getId(), "klaxoon"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(body))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        JsonNode json = objectMapper.readTree(result.getResponse().getContentAsString());
+        UUID card1Id = UUID.fromString(json.get("cardIds").get(0).asText());
+        UUID card2Id = UUID.fromString(json.get("cardIds").get(1).asText());
+        Card card1 = cardRepository.findById(card1Id).orElseThrow();
+        Card card2 = cardRepository.findById(card2Id).orElseThrow();
+
+        assertThat(card1.getGroupId()).isNotNull();
+        assertThat(card1.getGroupId()).isEqualTo(card2.getGroupId());
+        assertThat(card1.getGroupId()).isNotEqualTo(existingGroupId);
+    }
+
     // -------------------------------------------------------------------------
     // Import — custom fields (case-insensitive reuse)
     // -------------------------------------------------------------------------
@@ -532,6 +576,24 @@ class WhiteboardImportControllerIT {
                         .header("Authorization", "Bearer " + tokenA)
                         .content(undoBody))
                 .andExpect(status().isBadRequest());
+    }
+
+    /**
+     * Given a random, non-existent {@code boardId}, when an undo is posted, then the server
+     * responds 404 (anti-enumeration), mirroring the import endpoint's own unknown-board
+     * behaviour.
+     */
+    @Test
+    void undo_unknownBoard_returns404() throws Exception {
+        String undoBody = """
+                {"cardIds": [], "connectionIds": [], "frameIds": []}
+                """;
+
+        mockMvc.perform(post(path(UUID.randomUUID(), "undo"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + tokenA)
+                        .content(undoBody))
+                .andExpect(status().isNotFound());
     }
 
     private List<String> toStringList(final JsonNode array) {
