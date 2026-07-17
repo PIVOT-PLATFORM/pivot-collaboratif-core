@@ -68,4 +68,69 @@ class CardUrlExtractorTest {
         // The full match must not swallow the closing quote/tag delimiter.
         assertThat(url.orElseThrow()).doesNotContain("\"").doesNotContain("<");
     }
+
+    // ---------------------------------------------------------------------
+    // US08.6.1 — multi-block TEXT document encoding ({"v":2,"blocks":[…]})
+    // ---------------------------------------------------------------------
+
+    @Test
+    void block_doc_extracts_url_from_a_block_text_value() {
+        String blockDoc = "{\"v\":2,\"blocks\":["
+                + "{\"level\":\"title\",\"text\":\"My heading\"},"
+                + "{\"level\":\"body\",\"text\":\"Read https://example.com/deep-dive today\",\"bold\":true}"
+                + "]}";
+        Optional<String> url = CardUrlExtractor.extract(CardType.TEXT, blockDoc);
+        assertThat(url).contains("https://example.com/deep-dive");
+    }
+
+    @Test
+    void block_doc_with_url_in_first_block_wins() {
+        String blockDoc = "{\"v\":2,\"blocks\":["
+                + "{\"level\":\"body\",\"text\":\"first http://one.example.org here\"},"
+                + "{\"level\":\"body\",\"text\":\"second https://two.example.org here\"}"
+                + "]}";
+        Optional<String> url = CardUrlExtractor.extract(CardType.LABEL, blockDoc);
+        assertThat(url).contains("http://one.example.org");
+    }
+
+    @Test
+    void block_doc_without_any_url_yields_empty() {
+        String blockDoc = "{\"v\":2,\"blocks\":["
+                + "{\"level\":\"title\",\"text\":\"Just a heading\"},"
+                + "{\"level\":\"body\",\"text\":\"and some body text, no links\"}"
+                + "]}";
+        assertThat(CardUrlExtractor.extract(CardType.TEXT, blockDoc)).isEmpty();
+    }
+
+    @Test
+    void block_doc_ignores_url_shaped_content_outside_block_text() {
+        // A URL sitting in a non-`text` field (here a bogus `href`) must NOT be extracted — only
+        // the concatenation of block `text` values is scanned, never the JSON structure.
+        String blockDoc = "{\"v\":2,\"blocks\":["
+                + "{\"level\":\"body\",\"text\":\"no link in the text\",\"href\":\"https://evil.example.com/x\"}"
+                + "]}";
+        assertThat(CardUrlExtractor.extract(CardType.TEXT, blockDoc)).isEmpty();
+    }
+
+    @Test
+    void block_doc_with_empty_blocks_array_yields_empty() {
+        assertThat(CardUrlExtractor.extract(CardType.TEXT, "{\"v\":2,\"blocks\":[]}")).isEmpty();
+    }
+
+    @Test
+    void malformed_block_doc_falls_back_to_plain_text_scan() {
+        // Truncated / invalid JSON that still contains a literal URL — must not throw, and must
+        // fall back to scanning the raw string, where the URL is still found byte-for-byte.
+        String malformed = "{\"v\":2,\"blocks\":[{\"text\":\"see https://example.com/x\" ";
+        Optional<String> url = CardUrlExtractor.extract(CardType.TEXT, malformed);
+        assertThat(url).contains("https://example.com/x");
+    }
+
+    @Test
+    void object_without_blocks_key_falls_back_to_raw_scan() {
+        // Legacy single-format envelope has no `blocks` array — scanned raw, URL still exposed.
+        String legacyEnvelope = "{\"text\":\"Link: https://example.com/legacy\",\"italic\":true}";
+        Optional<String> url = CardUrlExtractor.extract(CardType.TEXT, legacyEnvelope);
+        assertThat(url).contains("https://example.com/legacy");
+    }
 }
