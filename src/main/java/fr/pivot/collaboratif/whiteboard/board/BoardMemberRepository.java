@@ -27,6 +27,19 @@ public interface BoardMemberRepository extends JpaRepository<BoardMember, BoardM
     Optional<BoardMember> findByIdBoardIdAndIdUserId(UUID boardId, Long userId);
 
     /**
+     * Finds a share row by its board-independent surrogate {@code shareId} <em>and</em> the board
+     * it must belong to (US08.2.5). Scoping the lookup by {@code boardId} — not by {@code shareId}
+     * alone — is the IDOR guard §6.1: a manager of board A can never resolve (and therefore never
+     * mutate) a share row of board B even by knowing its {@code shareId}.
+     *
+     * @param shareId the surrogate share identifier from the {@code /shares/{shareId}} path
+     * @param boardId the board UUID the share must belong to
+     * @return an {@link Optional} containing the share row, or empty if it does not belong to the
+     *         board (treated as 404 by the caller, anti-enumeration convention)
+     */
+    Optional<BoardMember> findByShareIdAndIdBoardId(UUID shareId, UUID boardId);
+
+    /**
      * Returns all membership records for the given board, ordered by join date ascending.
      *
      * @param boardId the board UUID
