@@ -220,7 +220,12 @@ class WireContractFixturesIT {
                 "straight",
                 "both",
                 true,
-                4);
+                4,
+                // Deliberately values the legacy fields cannot express: `dotted` has no boolean
+                // equivalent, and the two ends differ — `arrow` carried one value for both.
+                "dotted",
+                "circle",
+                "triangle");
     }
 
     /**

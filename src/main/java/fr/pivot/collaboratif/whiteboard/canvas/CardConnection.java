@@ -79,6 +79,26 @@ public class CardConnection {
     @Column(name = "width", nullable = false)
     private int width = 2;
 
+    /**
+     * Line style — {@code solid}, {@code dashed} or {@code dotted} (US08.7.2, V6). Supersedes
+     * {@link #dashed}, which cannot express a third style; {@code dashed} is kept for the
+     * connectors stored before this field and for older clients that still send it.
+     */
+    @Column(name = "line_style", nullable = false)
+    private String lineStyle = "solid";
+
+    /**
+     * Shape drawn at the connector's start — {@code none}, {@code arrow}, {@code triangle},
+     * {@code circle} or {@code diamond} (US08.7.2, V6). Together with {@link #endCap} it
+     * supersedes {@link #arrow}, which carried a single value for both ends at once.
+     */
+    @Column(name = "start_cap", nullable = false)
+    private String startCap = "none";
+
+    /** Shape drawn at the connector's end — same value set as {@link #startCap}. */
+    @Column(name = "end_cap", nullable = false)
+    private String endCap = "none";
+
     /** Timestamp when this connector was created. */
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -218,6 +238,63 @@ public class CardConnection {
      */
     public int getWidth() {
         return width;
+    }
+
+    /**
+     * Returns the connector line style ({@code solid}/{@code dashed}/{@code dotted}).
+     *
+     * @return the line style
+     */
+    public String getLineStyle() {
+        return lineStyle;
+    }
+
+    /**
+     * Sets the connector line style. Callers must pass a whitelisted value — see
+     * {@code CanvasActionService.ALLOWED_LINE_STYLES}.
+     *
+     * @param lineStyle the line style
+     */
+    public void setLineStyle(final String lineStyle) {
+        this.lineStyle = lineStyle;
+    }
+
+    /**
+     * Returns the shape drawn at the connector's start.
+     *
+     * @return the start cap
+     */
+    public String getStartCap() {
+        return startCap;
+    }
+
+    /**
+     * Sets the shape drawn at the connector's start. Callers must pass a whitelisted value — see
+     * {@code CanvasActionService.ALLOWED_CONNECTION_CAPS}.
+     *
+     * @param startCap the start cap
+     */
+    public void setStartCap(final String startCap) {
+        this.startCap = startCap;
+    }
+
+    /**
+     * Returns the shape drawn at the connector's end.
+     *
+     * @return the end cap
+     */
+    public String getEndCap() {
+        return endCap;
+    }
+
+    /**
+     * Sets the shape drawn at the connector's end. Callers must pass a whitelisted value — see
+     * {@code CanvasActionService.ALLOWED_CONNECTION_CAPS}.
+     *
+     * @param endCap the end cap
+     */
+    public void setEndCap(final String endCap) {
+        this.endCap = endCap;
     }
 
     /**

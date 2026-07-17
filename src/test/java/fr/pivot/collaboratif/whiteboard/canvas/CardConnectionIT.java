@@ -242,6 +242,147 @@ class CardConnectionIT {
     }
 
     // =========================================================================
+    // Test 1c — extended styling: line style + per-end caps (US08.7.2, V6)
+    // =========================================================================
+
+    /**
+     * The extended model exists because the legacy one cannot express what the feature needs:
+     * {@code dashed} is a boolean with no room for {@code dotted}, and {@code arrow} carries one
+     * value for both ends at once. Without these columns the server would silently drop the fields
+     * and — the board being server-authoritative — the chosen style would never appear at all.
+     */
+    @Test
+    void connection_create_applies_line_style_and_per_end_caps() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card cardA = seedCard(board.getId(), tenantId);
+        Card cardB = seedCard(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_CREATE",
+                        "data", Map.of(
+                                "fromId", cardA.getId().toString(),
+                                "toId", cardB.getId().toString(),
+                                "lineStyle", "dotted",
+                                "startCap", "circle",
+                                "endCap", "triangle")));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        Map<String, Object> connData = map(msg);
+        assertThat(connData.get("lineStyle")).isEqualTo("dotted");
+        assertThat(connData.get("startCap")).isEqualTo("circle");
+        assertThat(connData.get("endCap")).isEqualTo("triangle");
+
+        Thread.sleep(200);
+        CardConnection stored = cardConnectionRepository
+                .findAllByBoardIdAndTenantId(board.getId(), tenantId).get(0);
+        assertThat(stored.getLineStyle()).isEqualTo("dotted");
+        assertThat(stored.getStartCap()).isEqualTo("circle");
+        assertThat(stored.getEndCap()).isEqualTo("triangle");
+    }
+
+    /** The two ends are independent — the whole point of replacing the single `arrow` field. */
+    @Test
+    void connection_update_can_style_each_end_differently() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card cardA = seedCard(board.getId(), tenantId);
+        Card cardB = seedCard(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        session.subscribe("/topic/whiteboard/" + board.getId(), noOpHandler());
+        Thread.sleep(100);
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_CREATE",
+                        "data", Map.of("fromId", cardA.getId().toString(), "toId", cardB.getId().toString())));
+        Thread.sleep(400);
+        CardConnection created = cardConnectionRepository
+                .findAllByBoardIdAndTenantId(board.getId(), tenantId).get(0);
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_UPDATE",
+                        "data", Map.of("id", created.getId().toString(),
+                                "startCap", "diamond",
+                                "endCap", "none")));
+
+        Thread.sleep(400);
+        CardConnection reloaded = cardConnectionRepository.findById(created.getId()).orElseThrow();
+        assertThat(reloaded.getStartCap()).isEqualTo("diamond");
+        assertThat(reloaded.getEndCap()).isEqualTo("none");
+    }
+
+    /** Closed sets, same as `shape`/`arrow`: a crafted value never reaches the SVG renderer. */
+    @Test
+    void connection_create_rejects_out_of_whitelist_line_style_and_caps_for_those_fields_alone()
+            throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card cardA = seedCard(board.getId(), tenantId);
+        Card cardB = seedCard(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_CREATE",
+                        "data", Map.of(
+                                "fromId", cardA.getId().toString(),
+                                "toId", cardB.getId().toString(),
+                                "lineStyle", "url(javascript:alert(1))",
+                                "startCap", "<script>",
+                                "endCap", "arrow")));
+
+        BroadcastCanvasMessage msg = future.get(5, TimeUnit.SECONDS);
+        Map<String, Object> connData = map(msg);
+        // Rejected fields fall back to their defaults; the valid one of the same message applies.
+        assertThat(connData.get("lineStyle")).isEqualTo("solid");
+        assertThat(connData.get("startCap")).isEqualTo("none");
+        assertThat(connData.get("endCap")).isEqualTo("arrow");
+    }
+
+    /**
+     * Connectors created without the new fields keep the legacy defaults — every connector stored
+     * before V6 is in this case, and the migration back-fills them from `dashed`/`arrow` so none of
+     * them silently changes appearance.
+     */
+    @Test
+    void connection_create_without_extended_style_keeps_the_defaults() throws Exception {
+        long tenantId = seedTenant();
+        long ownerId = seedUser(tenantId);
+        String token = issueToken(ownerId);
+        Board board = createBoardWithOwner(tenantId, ownerId);
+        Card cardA = seedCard(board.getId(), tenantId);
+        Card cardB = seedCard(board.getId(), tenantId);
+
+        StompSession session = connectAs(token);
+        CompletableFuture<BroadcastCanvasMessage> future = new CompletableFuture<>();
+        session.subscribe("/topic/whiteboard/" + board.getId(),
+                framHandler(BroadcastCanvasMessage.class, future));
+
+        session.send("/app/whiteboard/" + board.getId() + "/action",
+                Map.of("type", "CONNECTION_CREATE",
+                        "data", Map.of("fromId", cardA.getId().toString(), "toId", cardB.getId().toString())));
+
+        Map<String, Object> connData = map(future.get(5, TimeUnit.SECONDS));
+        assertThat(connData.get("lineStyle")).isEqualTo("solid");
+        assertThat(connData.get("startCap")).isEqualTo("none");
+        assertThat(connData.get("endCap")).isEqualTo("none");
+    }
+
+    // =========================================================================
     // Test 2 — self-link creates nothing and broadcasts nothing
     // =========================================================================
 

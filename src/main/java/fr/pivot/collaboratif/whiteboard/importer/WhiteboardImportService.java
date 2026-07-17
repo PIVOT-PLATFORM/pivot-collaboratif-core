@@ -533,7 +533,8 @@ public class WhiteboardImportService {
         return CardConnectionDto.of(
                 connection.getId(), connection.getFromId(), connection.getToId(), connection.getLabel(),
                 connection.getColor(), connection.getShape(), connection.getArrow(),
-                connection.isDashed(), connection.getWidth());
+                connection.isDashed(), connection.getWidth(),
+                connection.getLineStyle(), connection.getStartCap(), connection.getEndCap());
     }
 
     private FrameDto toFrameDto(final Frame frame) {
